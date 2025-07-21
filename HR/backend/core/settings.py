@@ -11,6 +11,10 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,12 +24,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-%ryia1dwp=pv(sxmko7)n5ov8*@i=!mk)1aak#em8y%65#0$iz'
+SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = []
+# In production, set this to your domain name.
+ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 
 # Application definition
@@ -136,15 +141,17 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 15,
 }
 
+# In production, set this to False.
 CORS_ALLOW_ALL_ORIGINS = True  # For development only!
 
+# In production, set this to your frontend's domain.
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://localhost:5173",  # If you use Vite
 ]
 
 # Openrouter.ai API key (set your actual key here or via environment variable)
-OPENROUTER_API_KEY = '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'
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
