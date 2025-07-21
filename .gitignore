@@ -1,0 +1,60 @@
+# Node.js
+node_modules/
+bun.lockb
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+/dist
+/build
+
+# Vite
+.vite
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.egg-info/
+.eggs/
+*.egg
+*.log
+*.pot
+*.mo
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Django
+*.sqlite3
+db.sqlite3
+media/
+staticfiles/
+.env
+venv/
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.swp
+*.swo
+.idea/
+*.iml
+*.bak
+*.tmp
+
+# Ignore test coverage
+coverage/
+
+# Ignore local config
+local_settings.py 
