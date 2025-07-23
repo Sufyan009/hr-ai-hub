@@ -7,12 +7,17 @@ import {
   CheckCircle,
   AlertCircle,
   Calendar,
-  FileText
+  FileText,
+  RefreshCw,
+  Plus,
+  Trash2,
+  Briefcase
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
+import api from '@/services/api';
 
 const Dashboard: React.FC = () => {
   const { user } = useAuth();
@@ -20,25 +25,34 @@ const Dashboard: React.FC = () => {
   const [recentActivities, setRecentActivities] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const [metricsRes, activitiesRes] = await Promise.all([
+        api.get('/metrics/'),
+        api.get('/recent-activities/')
+      ]);
+      setMetrics(metricsRes.data);
+      setRecentActivities(activitiesRes.data);
+    } catch {
+      setError('Failed to refresh dashboard data.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const token = localStorage.getItem('authToken');
         const [metricsRes, activitiesRes] = await Promise.all([
-          fetch('http://localhost:8000/api/metrics/', {
-            headers: { 'Authorization': `Token ${token}` }
-          }),
-          fetch('http://localhost:8000/api/recent-activities/', {
-            headers: { 'Authorization': `Token ${token}` }
-          })
+          api.get('/metrics/'),
+          api.get('/recent-activities/')
         ]);
-        if (!metricsRes.ok || !activitiesRes.ok) throw new Error('Failed to fetch dashboard data');
-        const metricsData = await metricsRes.json();
-        const activitiesData = await activitiesRes.json();
-        setMetrics(metricsData);
-        setRecentActivities(activitiesData);
+        setMetrics(metricsRes.data);
+        setRecentActivities(activitiesRes.data);
       } catch (err) {
         setError('Failed to load dashboard data.');
       } finally {
@@ -48,7 +62,6 @@ const Dashboard: React.FC = () => {
     fetchData();
   }, []);
 
-  // Map backend metrics to UI cards
   const metricCards = metrics ? [
     {
       title: 'Total Candidates',
@@ -56,7 +69,7 @@ const Dashboard: React.FC = () => {
       change: metrics.total_candidates_change ?? '+0%',
       trend: metrics.total_candidates_trend ?? 'up',
       icon: Users,
-      color: 'bg-primary'
+      color: 'bg-blue-600'
     },
     {
       title: 'Active Positions',
@@ -64,7 +77,7 @@ const Dashboard: React.FC = () => {
       change: metrics.active_positions_change ?? '+0',
       trend: metrics.active_positions_trend ?? 'up',
       icon: FileText,
-      color: 'bg-secondary'
+      color: 'bg-purple-600'
     },
     {
       title: 'Hired This Month',
@@ -72,69 +85,117 @@ const Dashboard: React.FC = () => {
       change: metrics.hired_this_month_change ?? '+0%',
       trend: metrics.hired_this_month_trend ?? 'up',
       icon: CheckCircle,
-      color: 'bg-success'
+      color: 'bg-teal-600'
     },
     {
       title: 'Pending Reviews',
       value: metrics.pending_reviews ?? '—',
       change: metrics.pending_reviews_change ?? '+0%',
       trend: metrics.pending_reviews_trend ?? 'down',
-      icon: Clock,
-      color: 'bg-warning'
+      icon: AlertCircle,
+      color: 'bg-orange-600'
     }
   ] : [];
 
   const getStatusBadge = (status: string) => {
-    switch (status) {
+    switch (status.toLowerCase()) {
       case 'new':
-        return <Badge variant="secondary">New</Badge>;
+        return <Badge className="bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-100">New</Badge>;
       case 'scheduled':
-        return <Badge className="bg-primary text-primary-foreground">Scheduled</Badge>;
+        return <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">Scheduled</Badge>;
       case 'hired':
-        return <Badge className="bg-success text-success-foreground">Hired</Badge>;
+        return <Badge className="bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200">Hired</Badge>;
       case 'rejected':
-        return <Badge variant="destructive">Rejected</Badge>;
+        return <Badge className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">Rejected</Badge>;
       default:
-        return <Badge variant="outline">Unknown</Badge>;
+        return <Badge className="bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-100">Unknown</Badge>;
     }
   };
 
-  if (loading) return <div className="text-center py-10">Loading...</div>;
-  if (error) return <div className="text-center text-red-500 py-10">{error}</div>;
+  const activityIcon = (activity: string) => {
+    if (!activity) return null;
+    if (activity.toLowerCase().includes('added')) return <Plus className="h-5 w-5 text-blue-500" />;
+    if (activity.toLowerCase().includes('deleted')) return <Trash2 className="h-5 w-5 text-red-500" />;
+    if (activity.toLowerCase().includes('hired')) return <CheckCircle className="h-5 w-5 text-teal-500" />;
+    if (activity.toLowerCase().includes('posted')) return <Briefcase className="h-5 w-5 text-purple-500" />;
+    return <Clock className="h-5 w-5 text-gray-500 dark:text-gray-400" />;
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full py-10 bg-gray-50 dark:bg-gray-900 rounded-lg">
+        <div className="flex items-center gap-2">
+          <RefreshCw className="h-5 w-5 animate-spin text-blue-600" />
+          <span className="text-gray-700 dark:text-gray-200">Loading...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full py-10 bg-gray-50 dark:bg-gray-900 rounded-lg">
+        <div className="text-red-600 dark:text-red-400 font-medium mb-4 text-lg">{error}</div>
+        <Button
+          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg px-6 py-2"
+          onClick={() => window.location.reload()}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
+    <div className="container mx-auto px-4 py-8 max-w-7xl">
       {/* Welcome Section */}
-      <div className="flex flex-col space-y-2">
-        <h1 className="text-3xl font-bold text-foreground">Welcome back, {user?.first_name || 'User'}!</h1>
-        <p className="text-muted-foreground">
+      <div className="mb-8">
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-semibold text-gray-800 dark:text-gray-100">
+            Welcome back, {user?.first_name || 'User'}!
+          </h1>
+          <Button
+            variant="outline"
+            className="flex items-center gap-2 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        </div>
+        <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
           Here's an overview of your recruitment activities and performance.
         </p>
       </div>
 
       {/* Metrics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {metricCards.map((metric, index) => (
-          <Card key={index} className="relative overflow-hidden bg-gradient-card border-0 shadow-soft hover:shadow-medium transition-all duration-300 animate-scale-in" style={{ animationDelay: `${index * 100}ms` }}>
+          <Card
+            key={index}
+            className="relative overflow-hidden border-0 shadow-lg hover:shadow-xl transition-shadow duration-300 bg-white dark:bg-gray-800"
+            style={{ animation: `fadeInUp 0.3s ease-out ${index * 100}ms both` }}
+          >
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div className="space-y-2">
-                  <p className="text-sm font-medium text-muted-foreground">
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
                     {metric.title}
                   </p>
-                  <p className="text-2xl font-bold text-foreground">
+                  <p className="text-2xl font-bold text-gray-800 dark:text-gray-100">
                     {metric.value}
                   </p>
-                  <div className="flex items-center space-x-1">
+                  <div className="flex items-center gap-1">
                     <TrendingUp
-                      className={`h-4 w-4 ${metric.trend === 'up' ? 'text-success' : 'text-destructive'}`}
+                      className={`h-4 w-4 ${metric.trend === 'up' ? 'text-teal-500' : 'text-red-500'}`}
                     />
-                    <span className={`text-sm font-medium ${metric.trend === 'up' ? 'text-success' : 'text-destructive'}`}>
+                    <span className={`text-sm font-medium ${metric.trend === 'up' ? 'text-teal-500' : 'text-red-500'}`}>
                       {metric.change}
                     </span>
                   </div>
                 </div>
-                <div className={`p-3 rounded-lg ${metric.color}`}>
+                <div className={`p-3 rounded-full ${metric.color}`}>
                   <metric.icon className="h-6 w-6 text-white" />
                 </div>
               </div>
@@ -145,57 +206,60 @@ const Dashboard: React.FC = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Recent Activities */}
-        <Card className="lg:col-span-2 shadow-soft border-0 bg-gradient-card">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Clock className="h-5 w-5 text-primary" />
+        <Card className="lg:col-span-2 shadow-lg border-0 bg-white dark:bg-gray-800">
+          <CardHeader className="border-b bg-gray-50 dark:bg-gray-700">
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-800 dark:text-gray-100">
+              <Clock className="h-5 w-5 text-blue-600" />
               Recent Activities
             </CardTitle>
-            <CardDescription>
+            <CardDescription className="text-sm text-gray-600 dark:text-gray-400">
               Latest candidate interactions and updates
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
+          <CardContent className="p-6">
+            <div className="space-y-3">
               {recentActivities.map((activity, idx) => (
                 <div
                   key={activity.id || idx}
-                  className="flex items-center justify-between p-4 rounded-lg bg-background/50 hover:bg-background/80 transition-colors duration-200"
+                  className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors duration-200"
                 >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-1">
-                      <span className="font-medium text-foreground">
-                        {activity.action}
+                  <div className="flex items-center gap-3">
+                    {activityIcon(activity.activity)}
+                    <div>
+                      <span className="font-medium text-gray-800 dark:text-gray-100">
+                        {activity.activity || activity.message || 'No details'}
                       </span>
-                      {getStatusBadge(activity.status)}
+                      <div className="mt-1">{getStatusBadge(activity.status || '')}</div>
                     </div>
-                    <p className="text-sm text-muted-foreground">
-                      <span className="font-medium">{activity.candidate}</span> • {activity.position}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {activity.time}
-                    </p>
                   </div>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {activity.timestamp && (new Date(activity.timestamp).toLocaleString())}
+                  </span>
                 </div>
               ))}
+              {recentActivities.length === 0 && (
+                <div className="text-center text-gray-500 dark:text-gray-400 py-4">
+                  No recent activities.
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
 
         {/* Quick Actions */}
-        <Card className="shadow-soft border-0 bg-gradient-card">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <UserPlus className="h-5 w-5 text-primary" />
+        <Card className="shadow-lg border-0 bg-white dark:bg-gray-800">
+          <CardHeader className="border-b bg-gray-50 dark:bg-gray-700">
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-800 dark:text-gray-100">
+              <UserPlus className="h-5 w-5 text-blue-600" />
               Quick Actions
             </CardTitle>
-            <CardDescription>
+            <CardDescription className="text-sm text-gray-600 dark:text-gray-400">
               Common tasks and shortcuts
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="p-6 space-y-3">
             <Button
-              className="w-full justify-start gap-3 bg-gradient-primary hover:shadow-glow transition-all duration-300"
+              className="w-full justify-start gap-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-all duration-200"
               size="lg"
               onClick={() => window.location.href = '/candidates/new'}
             >
@@ -204,7 +268,7 @@ const Dashboard: React.FC = () => {
             </Button>
             <Button
               variant="outline"
-              className="w-full justify-start gap-3 hover:bg-secondary/10 border-border"
+              className="w-full justify-start gap-3 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-100"
               size="lg"
               onClick={() => window.location.href = '/candidates'}
             >
@@ -213,7 +277,7 @@ const Dashboard: React.FC = () => {
             </Button>
             <Button
               variant="outline"
-              className="w-full justify-start gap-3 hover:bg-secondary/10 border-border"
+              className="w-full justify-start gap-3 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-100"
               size="lg"
               onClick={() => window.location.href = '/chat'}
             >
@@ -222,7 +286,7 @@ const Dashboard: React.FC = () => {
             </Button>
             <Button
               variant="outline"
-              className="w-full justify-start gap-3 hover:bg-secondary/10 border-border"
+              className="w-full justify-start gap-3 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-100"
               size="lg"
               onClick={() => window.location.href = '/candidates?stage=screening'}
             >

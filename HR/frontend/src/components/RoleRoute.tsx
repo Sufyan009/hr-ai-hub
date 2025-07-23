@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { NotAuthorized } from '@/pages/NotFound';
 
 interface RoleRouteProps {
   requiredRole: string;
@@ -19,8 +20,8 @@ export const RoleRoute: React.FC<RoleRouteProps> = ({ requiredRole, redirectTo =
   }
 
   if (!hasRole(requiredRole)) {
-    // Optionally, redirect to a "not authorized" page or home
-    return <Navigate to="/" />;
+    // Show Not Authorized page
+    return <NotAuthorized />;
   }
 
   return <Outlet />;

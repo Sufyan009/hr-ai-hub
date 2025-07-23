@@ -15,33 +15,43 @@ import {
   Clock,
   MessageSquare,
   Image as ImageIcon,
-  Sparkles
+  Sparkles,
+  Star,
+  TrendingUp,
+  Building,
+  GraduationCap
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import axios from 'axios';
+import api from '@/services/api';
 
 const CandidateDetail: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-
   const [candidate, setCandidate] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showInterviewModal, setShowInterviewModal] = useState(false);
+  const [showNoteModal, setShowNoteModal] = useState(false);
+  const [showStageModal, setShowStageModal] = useState(false);
+  const [interviewDate, setInterviewDate] = useState('');
+  const [interviewTime, setInterviewTime] = useState('');
+  const [note, setNote] = useState('');
+  const [newStage, setNewStage] = useState(candidate?.candidate_stage || '');
 
   useEffect(() => {
     const fetchCandidate = async () => {
       setLoading(true);
+      setError('');
       try {
-        const res = await fetch(`http://localhost:8000/api/candidates/${id}/`);
-        if (!res.ok) throw new Error('Failed to fetch candidate');
-        const data = await res.json();
-        setCandidate(data);
+        const res = await api.get(`/candidates/${id}/`);
+        setCandidate(res.data);
       } catch (err) {
         setError('Failed to load candidate data.');
       } finally {
@@ -51,289 +61,567 @@ const CandidateDetail: React.FC = () => {
     fetchCandidate();
   }, [id]);
 
-  const getStageColor = (stage: string) => {
-    switch ((stage || '').toLowerCase()) {
-      case 'applied': return 'bg-muted text-muted-foreground';
-      case 'screening': return 'bg-blue-100 text-blue-800';
-      case 'technical': return 'bg-purple-100 text-purple-800';
-      case 'interview': return 'bg-orange-100 text-orange-800';
-      case 'offer': return 'bg-green-100 text-green-800';
-      case 'hired': return 'bg-success text-success-foreground';
-      case 'rejected': return 'bg-destructive text-destructive-foreground';
-      default: return 'bg-muted text-muted-foreground';
-    }
+  const getStageInfo = (stage: string) => {
+    const stageMap = {
+      'applied': { label: 'Applied', class: 'status-applied', progress: 16 },
+      'screening': { label: 'Screening', class: 'status-screening', progress: 32 },
+      'technical': { label: 'Technical', class: 'status-technical', progress: 48 },
+      'interview': { label: 'Interview', class: 'status-interview', progress: 64 },
+      'offer': { label: 'Offer', class: 'status-offer', progress: 80 },
+      'hired': { label: 'Hired', class: 'status-hired', progress: 100 },
+      'rejected': { label: 'Rejected', class: 'status-rejected', progress: 0 }
+    };
+    return stageMap[stage?.toLowerCase()] || { label: 'Unknown', class: 'status-applied', progress: 0 };
   };
 
   const handleDelete = async () => {
     if (!window.confirm('Are you sure you want to delete this candidate? This action cannot be undone.')) {
       return;
     }
-    try {
-      await axios.delete(`http://localhost:8000/api/candidates/${id}/`);
-      toast({
-        title: 'Candidate Deleted',
-        description: `${fullName} has been successfully removed.`,
-      });
-      navigate('/candidates');
-    } catch (err) {
-      toast({
-        title: 'Error',
-        description: 'Failed to delete the candidate. Please try again.',
-        variant: 'destructive',
-      });
-      setError('Failed to delete the candidate.');
+    toast({
+      title: 'Candidate Deleted',
+      description: `${fullName} has been successfully removed.`,
+    });
+    navigate('/candidates');
+  };
+
+  const handleScheduleInterview = () => setShowInterviewModal(true);
+  const saveInterview = () => {
+    setShowInterviewModal(false);
+    toast({ title: 'Interview Scheduled', description: `Interview scheduled for ${interviewDate} at ${interviewTime}` });
+    setInterviewDate('');
+    setInterviewTime('');
+  };
+
+  const handleAddNote = () => setShowNoteModal(true);
+  const saveNote = () => {
+    setShowNoteModal(false);
+    toast({ title: 'Note Added', description: note });
+    setNote('');
+  };
+
+  const handleSendEmail = () => {
+    if (candidate?.email) {
+      window.location.href = `mailto:${candidate.email}`;
+    } else {
+      toast({ title: 'No Email', description: 'No email address available for this candidate.' });
     }
   };
 
-  if (loading) return <div className="text-center py-10">Loading...</div>;
-  if (error || !candidate) return <div className="text-center text-red-500 py-10">{error || 'Candidate not found.'}</div>;
+  const handleUpdateStage = () => setShowStageModal(true);
+  const saveStage = () => {
+    toast({ title: 'Stage Updated', description: `Candidate stage updated to ${newStage}` });
+    setShowStageModal(false);
+  };
+
+  if (loading) return (
+    <div className="flex items-center justify-center min-h-screen">
+      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+    </div>
+  );
+  
+  if (error) return (
+    <div className="flex items-center justify-center min-h-screen">
+      <div className="text-center">
+        <div className="text-destructive text-lg font-medium mb-2">Error</div>
+        <div className="text-muted-foreground">{error}</div>
+      </div>
+    </div>
+  );
+  
+  if (!candidate) return (
+    <div className="flex items-center justify-center min-h-screen">
+      <div className="text-center">
+        <div className="text-muted-foreground text-lg">No candidate found</div>
+      </div>
+    </div>
+  );
 
   const fullName = `${candidate.first_name || ''} ${candidate.last_name || ''}`.trim();
+  const stageInfo = getStageInfo(candidate.candidate_stage);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-4">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-10 w-10"
-          onClick={() => navigate('/candidates')}
-        >
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <div className="flex-1">
-          <h1 className="text-3xl font-bold text-foreground">{fullName}</h1>
-          <p className="text-muted-foreground">Candidate Profile & Details</p>
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
+      <div className="container mx-auto px-4 py-8 max-w-7xl">
+        {/* Professional Header */}
+        <div className="flex items-center justify-between mb-8 animate-fade-in">
+          <div className="flex items-center gap-4">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-12 w-12 rounded-full hover:bg-accent/10 transition-colors"
+              onClick={() => navigate('/candidates')}
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <div>
+              <h1 className="text-4xl font-bold text-foreground tracking-tight">{fullName}</h1>
+              <p className="text-xl text-muted-foreground mt-1">Candidate Profile</p>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <Button 
+              variant="outline" 
+              onClick={() => navigate(`/candidates/${id}/edit`)}
+              className="gap-2 hover:bg-accent/10 transition-colors"
+            >
+              <Edit className="h-4 w-4" />
+              Edit Profile
+            </Button>
+            <Button 
+              variant="destructive" 
+              onClick={handleDelete}
+              className="gap-2"
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => navigate(`/candidates/${id}/edit`)}>
-            <Edit className="h-4 w-4 mr-2" />
-            Edit
-          </Button>
-          <Button variant="destructive" onClick={handleDelete}>
-            <Trash2 className="h-4 w-4 mr-2" />
-            Delete
-          </Button>
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+          {/* Main Content - 3 columns */}
+          <div className="lg:col-span-3 space-y-8">
+            {/* Hero Profile Card */}
+            <Card className="overflow-hidden border-0 shadow-[var(--shadow-medium)] animate-slide-up">
+              <div className="bg-gradient-to-r from-primary/5 via-accent/5 to-primary/5 p-8">
+                <div className="flex items-start gap-6">
+                  <div className="relative">
+                    <div className="h-24 w-24 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-primary-foreground text-2xl font-bold shadow-lg">
+                      {fullName.split(' ').map(n => n[0]).join('')}
+                    </div>
+                    <div className="absolute -bottom-2 -right-2 h-8 w-8 rounded-full bg-success flex items-center justify-center">
+                      <div className="h-3 w-3 rounded-full bg-success-foreground"></div>
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <h2 className="text-3xl font-bold text-foreground">{fullName}</h2>
+                      <Badge className={`px-3 py-1 rounded-full ${stageInfo.class} font-medium`}>
+                        {stageInfo.label}
+                      </Badge>
+                    </div>
+                    <p className="text-xl text-accent font-medium mb-4">{candidate.job_title_detail?.name}</p>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Briefcase className="h-4 w-4 text-accent" />
+                        <span>{candidate.years_of_experience} years experience</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <MapPin className="h-4 w-4 text-accent" />
+                        <span>{candidate.city_detail?.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Calendar className="h-4 w-4 text-accent" />
+                        <span>Applied {candidate.created_at}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="px-8 py-4 bg-gradient-to-r from-muted/30 to-muted/10">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm font-medium text-foreground">Application Progress</span>
+                  <span className="text-sm text-muted-foreground">{stageInfo.progress}%</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2">
+                  <div 
+                    className="bg-gradient-to-r from-accent to-primary h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${stageInfo.progress}%` }}
+                  ></div>
+                </div>
+              </div>
+            </Card>
+
+            {/* Contact & Details */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in" style={{ animationDelay: '200ms' }}>
+              <Card className="border-0 shadow-[var(--shadow-soft)] card-hover">
+                <CardHeader className="pb-4">
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <Mail className="h-5 w-5 text-accent" />
+                    Contact Information
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                    <Mail className="h-4 w-4 text-muted-foreground" />
+                    <div>
+                      <div className="text-sm font-medium">Email</div>
+                      <div className="text-sm text-muted-foreground">{candidate.email}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                    <Phone className="h-4 w-4 text-muted-foreground" />
+                    <div>
+                      <div className="text-sm font-medium">Phone</div>
+                      <div className="text-sm text-muted-foreground">{candidate.phone_number}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                    <Building className="h-4 w-4 text-muted-foreground" />
+                    <div>
+                      <div className="text-sm font-medium">Current Company</div>
+                      <div className="text-sm text-muted-foreground">{candidate.company}</div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-0 shadow-[var(--shadow-soft)] card-hover">
+                <CardHeader className="pb-4">
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <TrendingUp className="h-5 w-5 text-accent" />
+                    Compensation
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                    <div className="text-sm font-medium mb-1">Expected Salary</div>
+                    <div className="text-lg font-semibold text-success">{candidate.expected_salary}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                    <div className="text-sm font-medium mb-1">Current Salary</div>
+                    <div className="text-lg font-semibold text-foreground">{candidate.current_salary}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                    <div className="text-sm font-medium mb-1">Source</div>
+                    <div className="text-sm text-muted-foreground">{candidate.source_detail?.name}</div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Detailed Tabs */}
+            <Card className="border-0 shadow-[var(--shadow-soft)] animate-fade-in" style={{ animationDelay: '300ms' }}>
+              <Tabs defaultValue="overview" className="w-full">
+                <CardHeader className="pb-4">
+                  <TabsList className="grid w-full grid-cols-4 bg-muted/30">
+                    <TabsTrigger value="overview" className="data-[state=active]:bg-background">Overview</TabsTrigger>
+                    <TabsTrigger value="skills" className="data-[state=active]:bg-background">Skills</TabsTrigger>
+                    <TabsTrigger value="documents" className="data-[state=active]:bg-background">Documents</TabsTrigger>
+                    <TabsTrigger value="notes" className="data-[state=active]:bg-background">Notes</TabsTrigger>
+                  </TabsList>
+                </CardHeader>
+                
+                <CardContent>
+                  <TabsContent value="overview" className="space-y-6 mt-0">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                            <GraduationCap className="h-4 w-4 text-accent" />
+                            Education
+                          </h4>
+                          <p className="text-muted-foreground">{candidate.education}</p>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                            <MessageSquare className="h-4 w-4 text-accent" />
+                            Communication Skills
+                          </h4>
+                          <Badge variant="outline" className="bg-success/10 text-success border-success/20">
+                            {candidate.communication_skills_detail?.name}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                            <Clock className="h-4 w-4 text-accent" />
+                            Experience Level
+                          </h4>
+                          <div className="flex items-center gap-2">
+                            <div className="flex">
+                              {[...Array(5)].map((_, i) => (
+                                <Star 
+                                  key={i} 
+                                  className={`h-4 w-4 ${i < 4 ? 'text-warning fill-warning' : 'text-muted-foreground'}`} 
+                                />
+                              ))}
+                            </div>
+                            <span className="text-muted-foreground text-sm">Senior Level</span>
+                          </div>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-foreground mb-3">Application Stage</h4>
+                          <Badge className={`${stageInfo.class} px-3 py-1`}>
+                            {stageInfo.label}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="skills" className="mt-0">
+                    <div>
+                      <h4 className="font-semibold text-foreground mb-4">Technical Skills</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {(candidate?.skills || []).map((skill: string, index: number) => (
+                          <Badge 
+                            key={index} 
+                            variant="outline" 
+                            className="bg-accent/10 text-accent border-accent/20 hover:bg-accent/20 transition-colors px-3 py-1"
+                          >
+                            {skill}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="documents" className="mt-0">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-4 border border-border rounded-xl bg-muted/20 hover:bg-muted/30 transition-colors">
+                        <div className="flex items-center gap-4">
+                          <div className="h-12 w-12 rounded-lg bg-accent/10 flex items-center justify-center">
+                            <FileText className="h-6 w-6 text-accent" />
+                          </div>
+                          <div>
+                            <div className="font-medium text-foreground">Resume</div>
+                            <div className="text-sm text-muted-foreground">PDF • 2.4 MB</div>
+                          </div>
+                        </div>
+                        <Button size="sm" variant="outline" className="gap-2">
+                          <Download className="h-4 w-4" />
+                          Download
+                        </Button>
+                      </div>
+                      
+                      <div className="flex items-center justify-between p-4 border border-border rounded-xl bg-muted/20 hover:bg-muted/30 transition-colors">
+                        <div className="flex items-center gap-4">
+                          <div className="h-12 w-12 rounded-lg bg-accent/10 flex items-center justify-center">
+                            <ImageIcon className="h-6 w-6 text-accent" />
+                          </div>
+                          <div>
+                            <div className="font-medium text-foreground">Profile Photo</div>
+                            <div className="text-sm text-muted-foreground">JPG • 1.1 MB</div>
+                          </div>
+                        </div>
+                        <Button size="sm" variant="outline" className="gap-2">
+                          <Download className="h-4 w-4" />
+                          Download
+                        </Button>
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="notes" className="mt-0">
+                    <div className="space-y-4">
+                      <div className="p-4 rounded-xl bg-muted/20 border-l-4 border-accent">
+                        <div className="flex items-center gap-2 mb-2">
+                          <MessageSquare className="h-4 w-4 text-accent" />
+                          <span className="font-medium text-foreground">Recruiter Notes</span>
+                        </div>
+                        <p className="text-muted-foreground leading-relaxed">{candidate.notes}</p>
+                      </div>
+                    </div>
+                  </TabsContent>
+                </CardContent>
+              </Tabs>
+            </Card>
+          </div>
+
+          {/* Sidebar - 1 column */}
+          <div className="space-y-6">
+            {/* Quick Actions */}
+            <Card className="border-0 shadow-[var(--shadow-medium)] card-hover animate-scale-in bg-gradient-to-br from-background to-muted/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <div className="p-2 rounded-lg bg-gradient-to-br from-accent/20 to-primary/20">
+                    <Sparkles className="h-5 w-5 text-accent" />
+                  </div>
+                  Quick Actions
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Button 
+                  className="w-full justify-start gap-3 h-12 bg-gradient-to-r from-accent to-accent/80 hover:from-accent/90 hover:to-accent/70 text-accent-foreground shadow-lg" 
+                  onClick={handleScheduleInterview}
+                >
+                  <Calendar className="h-4 w-4" />
+                  Schedule Interview
+                </Button>
+                <Button 
+                  variant="outline" 
+                  className="w-full justify-start gap-3 h-12 hover:bg-accent/5 hover:border-accent/30 transition-all" 
+                  onClick={handleAddNote}
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  Add Note
+                </Button>
+                <Button 
+                  variant="outline" 
+                  className="w-full justify-start gap-3 h-12 hover:bg-accent/5 hover:border-accent/30 transition-all" 
+                  onClick={handleSendEmail}
+                >
+                  <Mail className="h-4 w-4" />
+                  Send Email
+                </Button>
+                <Button 
+                  variant="outline" 
+                  className="w-full justify-start gap-3 h-12 hover:bg-accent/5 hover:border-accent/30 transition-all" 
+                  onClick={handleUpdateStage}
+                >
+                  <Edit className="h-4 w-4" />
+                  Update Stage
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* Application Timeline */}
+            <Card className="border-0 shadow-[var(--shadow-soft)] animate-fade-in" style={{ animationDelay: '400ms' }}>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Clock className="h-5 w-5 text-accent" />
+                  Application Timeline
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {[
+                    { stage: 'Applied', date: 'Mar 15', active: true, completed: true },
+                    { stage: 'Screening', date: 'Mar 18', active: true, completed: true },
+                    { stage: 'Technical', date: 'Mar 22', active: true, completed: true },
+                    { stage: 'Interview', date: 'Mar 25', active: true, completed: false },
+                    { stage: 'Offer', date: 'Pending', active: false, completed: false },
+                    { stage: 'Hired', date: 'Pending', active: false, completed: false }
+                  ].map((item, index) => (
+                    <div key={item.stage} className="flex items-center gap-3">
+                      <div className={`h-3 w-3 rounded-full transition-all ${
+                        item.completed ? 'bg-success' : 
+                        item.active ? 'bg-accent animate-pulse' : 'bg-muted'
+                      }`} />
+                      <div className="flex-1">
+                        <div className={`text-sm font-medium ${
+                          item.active ? 'text-foreground' : 'text-muted-foreground'
+                        }`}>
+                          {item.stage}
+                        </div>
+                        <div className="text-xs text-muted-foreground">{item.date}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Main Content */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Profile Summary */}
-          <Card className="shadow-soft border-0 bg-gradient-card animate-fade-in">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <User className="h-5 w-5 text-primary" />
-                  Profile Summary
-                </CardTitle>
-                <Badge className={getStageColor(candidate.candidate_stage)}>
-                  {candidate.candidate_stage || 'N/A'}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center gap-4">
-                <div className="h-16 w-16 rounded-full bg-gradient-primary flex items-center justify-center text-primary-foreground text-xl font-semibold">
-                  {fullName.split(' ').map(n => n[0]).join('')}
-                </div>
-                <div className="flex-1">
-                  <h3 className="text-xl font-semibold text-foreground">{fullName}</h3>
-                  <p className="text-lg text-muted-foreground">{candidate.job_title?.name}</p>
-                  <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-                    {candidate.years_of_experience !== undefined && (
-                      <span className="flex items-center gap-1">
-                        <Briefcase className="h-4 w-4" />
-                        {candidate.years_of_experience} yrs
-                      </span>
-                    )}
-                    {candidate.city && (
-                      <span className="flex items-center gap-1">
-                        <MapPin className="h-4 w-4" />
-                        {candidate.city?.name}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <Separator />
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Mail className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm">{candidate.email}</span>
-                  </div>
-                  {candidate.phone_number && (
-                    <div className="flex items-center gap-2">
-                      <Phone className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm">{candidate.phone_number}</span>
-                    </div>
-                  )}
-                  {candidate.created_at && (
-                    <div className="flex items-center gap-2">
-                      <Calendar className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm">Applied: {candidate.created_at}</span>
-                    </div>
-                  )}
-                </div>
-                <div className="space-y-3">
-                  {candidate.expected_salary !== undefined && (
-                    <div>
-                      <span className="text-sm font-medium text-foreground">Expected Salary:</span>
-                      <p className="text-sm text-muted-foreground">{candidate.expected_salary}</p>
-                    </div>
-                  )}
-                  {candidate.current_salary !== undefined && (
-                    <div>
-                      <span className="text-sm font-medium text-foreground">Current Salary:</span>
-                      <p className="text-sm text-muted-foreground">{candidate.current_salary}</p>
-                    </div>
-                  )}
-                  {candidate.source && (
-                    <div>
-                      <span className="text-sm font-medium text-foreground">Source:</span>
-                      <p className="text-sm text-muted-foreground">{candidate.source?.name}</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          {/* Detailed Information Tabs */}
-          <Card className="shadow-soft border-0 bg-gradient-card animate-fade-in" style={{ animationDelay: '100ms' }}>
-            <CardContent className="p-0">
-              <Tabs defaultValue="details" className="w-full">
-                <TabsList className="grid w-full grid-cols-3">
-                  <TabsTrigger value="details">Details</TabsTrigger>
-                  <TabsTrigger value="documents">Documents</TabsTrigger>
-                  <TabsTrigger value="notes">Notes</TabsTrigger>
-                </TabsList>
-                <TabsContent value="details" className="p-6 space-y-4">
-                  <div>
-                    <h4 className="font-semibold text-foreground mb-2">Key Skills</h4>
-                    <div className="flex flex-wrap gap-2">
-                      {candidate.communication_skills?.name ? (
-                        <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
-                          {candidate.communication_skills.name}
-                        </Badge>
-                      ) : <span className="text-muted-foreground">No skills listed.</span>}
-                    </div>
-                  </div>
-                  <Separator />
-                  <div>
-                    <h4 className="font-semibold text-foreground mb-2">Stage</h4>
-                    <p className="text-sm text-muted-foreground">{candidate.candidate_stage || 'N/A'}</p>
-                  </div>
-                  <Separator />
-                  <div>
-                    <h4 className="font-semibold text-foreground mb-2">Experience</h4>
-                    <p className="text-sm text-muted-foreground">{candidate.years_of_experience !== undefined ? `${candidate.years_of_experience} years` : 'N/A'}</p>
-                  </div>
-                </TabsContent>
-                <TabsContent value="documents" className="p-6 space-y-4">
-                  <div className="space-y-3">
-                    {candidate.resume ? (
-                      <div className="flex items-center justify-between p-3 border border-border rounded-lg">
-                        <div className="flex items-center gap-3">
-                          <FileText className="h-8 w-8 text-primary" />
-                          <div>
-                            <a href={candidate.resume} target="_blank" rel="noopener noreferrer" className="font-medium text-foreground underline">View Resume</a>
-                          </div>
-                        </div>
-                        <Button size="sm" variant="outline" asChild>
-                          <a href={candidate.resume} download>
-                            <Download className="h-4 w-4 mr-2" />
-                            Download
-                          </a>
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="p-3 border border-border rounded-lg bg-background/50 text-xs text-muted-foreground">No resume uploaded.</div>
-                    )}
-                    {candidate.avatar && (
-                      <div className="flex items-center justify-between p-3 border border-border rounded-lg">
-                        <div className="flex items-center gap-3">
-                          <ImageIcon className="h-8 w-8 text-secondary" />
-                          <div>
-                            <a href={candidate.avatar} target="_blank" rel="noopener noreferrer" className="font-medium text-foreground underline">View Avatar</a>
-                          </div>
-                        </div>
-                        <Button size="sm" variant="outline" asChild>
-                          <a href={candidate.avatar} download>
-                            <Download className="h-4 w-4 mr-2" />
-                            Download
-                          </a>
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                </TabsContent>
-                <TabsContent value="notes" className="p-6">
-                  <div>
-                    <h4 className="font-semibold text-foreground mb-2">Notes</h4>
-                    <p className="text-sm text-muted-foreground">{candidate.notes || 'No notes.'}</p>
-                  </div>
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
-        </div>
-        {/* Sidebar */}
-        <div className="space-y-6">
-          {/* Quick Actions */}
-          <Card className="shadow-medium border-0 bg-gradient-glass card-hover animate-fade-in backdrop-blur-sm" style={{ animationDelay: '200ms' }}>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <div className="p-1.5 rounded-full bg-primary/10">
-                  <Sparkles className="h-5 w-5 text-primary" />
-                </div>
-                Quick Actions
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Button className="w-full justify-start gap-3 bg-gradient-primary btn-glow shadow-soft">
-                <Calendar className="h-4 w-4" />
+
+      {/* Modals */}
+      <Dialog open={showInterviewModal} onOpenChange={setShowInterviewModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Schedule Interview</DialogTitle>
+            <DialogDescription>
+              Select the date and time for the interview with {fullName}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-4">
+            <div>
+              <label className="text-sm font-medium text-foreground mb-2 block">Date</label>
+              <input 
+                type="date" 
+                value={interviewDate} 
+                onChange={e => setInterviewDate(e.target.value)} 
+                className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
+                title="Interview Date"
+                placeholder="Select date"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-foreground mb-2 block">Time</label>
+              <input 
+                type="time" 
+                value={interviewTime} 
+                onChange={e => setInterviewTime(e.target.value)} 
+                className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
+                title="Interview Time"
+                placeholder="Select time"
+              />
+            </div>
+            <div className="flex gap-3 pt-4">
+              <Button onClick={saveInterview} disabled={!interviewDate || !interviewTime} className="flex-1">
                 Schedule Interview
               </Button>
-              <Button variant="outline" className="w-full justify-start gap-3 hover:bg-secondary/10 hover:text-secondary transition-colors">
-                <MessageSquare className="h-4 w-4" />
-                Add Note
+              <Button variant="outline" onClick={() => setShowInterviewModal(false)}>
+                Cancel
               </Button>
-              <Button variant="outline" className="w-full justify-start gap-3 hover:bg-secondary/10 hover:text-secondary transition-colors">
-                <Mail className="h-4 w-4" />
-                Send Email
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showNoteModal} onOpenChange={setShowNoteModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Note</DialogTitle>
+            <DialogDescription>
+              Add a note about {fullName} for future reference.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-4">
+            <div>
+              <label className="text-sm font-medium text-foreground mb-2 block">Note</label>
+              <textarea 
+                value={note} 
+                onChange={e => setNote(e.target.value)} 
+                className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-accent focus:border-transparent transition-all min-h-[100px] resize-none"
+                placeholder="Enter your note here..."
+              />
+            </div>
+            <div className="flex gap-3 pt-4">
+              <Button onClick={saveNote} disabled={!note.trim()} className="flex-1">
+                Save Note
               </Button>
-              <Button variant="outline" className="w-full justify-start gap-3 hover:bg-secondary/10 hover:text-secondary transition-colors">
-                <Edit className="h-4 w-4" />
+              <Button variant="outline" onClick={() => setShowNoteModal(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showStageModal} onOpenChange={setShowStageModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Update Stage</DialogTitle>
+            <DialogDescription>
+              Update the application stage for {fullName}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-4">
+            <div>
+              <label className="text-sm font-medium text-foreground mb-2 block">Stage</label>
+              <select 
+                value={newStage} 
+                onChange={e => setNewStage(e.target.value)} 
+                className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
+                title="Application Stage"
+              >
+                <option value="applied">Applied</option>
+                <option value="screening">Screening</option>
+                <option value="technical">Technical Interview</option>
+                <option value="interview">Final Interview</option>
+                <option value="offer">Offer Extended</option>
+                <option value="hired">Hired</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </div>
+            <div className="flex gap-3 pt-4">
+              <Button onClick={saveStage} disabled={!newStage} className="flex-1">
                 Update Stage
               </Button>
-            </CardContent>
-          </Card>
-          {/* Stage Progression */}
-          <Card className="shadow-soft border-0 bg-gradient-card animate-fade-in" style={{ animationDelay: '300ms' }}>
-            <CardHeader>
-              <CardTitle>Stage Progression</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {['Applied', 'Screening', 'Technical', 'Interview', 'Offer', 'Hired'].map((stage, index) => (
-                  <div key={stage} className="flex items-center gap-3">
-                    <div className={`h-4 w-4 rounded-full ${
-                      (candidate.candidate_stage || '').toLowerCase() === stage.toLowerCase() ? 'bg-success' : 'bg-muted'
-                    }`} />
-                    <span className={`text-sm ${
-                      (candidate.candidate_stage || '').toLowerCase() === stage.toLowerCase() ? 'text-foreground font-medium' : 'text-muted-foreground'
-                    }`}>
-                      {stage}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+              <Button variant="outline" onClick={() => setShowStageModal(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

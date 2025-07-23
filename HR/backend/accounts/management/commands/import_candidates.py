@@ -5,8 +5,12 @@ from django.core.management.base import BaseCommand
 class Command(BaseCommand):
     help = 'Import candidates from Excel file'
 
-    def handle(self, *args, **kwargs):
-        df = pd.read_excel('C:/Users/User/Desktop/Jupyter Noetbook/MCP/HR/backend/accounts/management/commands/candidates.xlsx')
+    def add_arguments(self, parser):
+        parser.add_argument('--file', type=str, default='candidates.xlsx', help='Path to Excel file')
+
+    def handle(self, *args, **options):
+        file_path = options['file']
+        df = pd.read_excel(file_path)
         for _, row in df.iterrows():
             if not Candidate.objects.filter(email=row['Email']).exists():
                 # Get or create related objects

@@ -7,7 +7,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import axios from 'axios';
+import api from '@/services/api'; // Add this import
+import { useToast } from '@/hooks/use-toast';
 
 const EditCandidate: React.FC = () => {
   const { id } = useParams();
@@ -34,26 +35,55 @@ const EditCandidate: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<{[key: string]: string}>({});
+
+  // Option lists for selects
+  const [jobTitles, setJobTitles] = useState<{id: number, name: string}[]>([]);
+  const [cities, setCities] = useState<{id: number, name: string}[]>([]);
+  const [sources, setSources] = useState<{id: number, name: string}[]>([]);
+  const [commSkills, setCommSkills] = useState<{id: number, name: string}[]>([]);
+  const { toast } = useToast();
+
+  // Fetch options for selects
+  useEffect(() => {
+    const fetchOptions = async () => {
+      try {
+        const [jtRes, cityRes, sourceRes, commRes] = await Promise.all([
+          api.get('/jobtitles/'),
+          api.get('/cities/'),
+          api.get('/sources/'),
+          api.get('/communicationskills/'),
+        ]);
+        setJobTitles(jtRes.data);
+        setCities(cityRes.data);
+        setSources(sourceRes.data);
+        setCommSkills(commRes.data);
+      } catch (error) {
+        // handle error
+      }
+    };
+    fetchOptions();
+  }, []);
 
   // Fetch candidate data on mount
   useEffect(() => {
     const fetchCandidate = async () => {
       setLoading(true);
       try {
-        const res = await axios.get(`http://localhost:8000/api/candidates/${id}/`);
+        const res = await api.get(`http://localhost:8000/api/candidates/${id}/`);
         const c = res.data;
         setFirstName(c.first_name || '');
         setLastName(c.last_name || '');
         setEmail(c.email || '');
         setPhoneNumber(c.phone_number || '');
-        setJobTitle(c.job_title || '');
+        setJobTitle(c.job_title || c.job_title_detail?.id?.toString() || '');
         setCandidateStage(c.candidate_stage || '');
         setCurrentSalary(c.current_salary ? String(c.current_salary) : '');
         setExpectedSalary(c.expected_salary ? String(c.expected_salary) : '');
         setYearsOfExperience(c.years_of_experience ? String(c.years_of_experience) : '');
-        setCommunicationSkills(c.communication_skills || '');
-        setCity(c.city || '');
-        setSource(c.source || '');
+        setCommunicationSkills(c.communication_skills || c.communication_skills_detail?.id?.toString() || '');
+        setCity(c.city || c.city_detail?.id?.toString() || '');
+        setSource(c.source || c.source_detail?.id?.toString() || '');
         setNotes(c.notes || '');
         setExistingResume(c.resume || '');
         setExistingAvatar(c.avatar || '');
@@ -67,25 +97,102 @@ const EditCandidate: React.FC = () => {
     // eslint-disable-next-line
   }, [id]);
 
+  // Validation helpers
+  const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const validatePhone = (phone: string) => /^\+?[0-9\-\s]{7,15}$/.test(phone);
+  const validateSalary = (salary: string) => !salary || (!isNaN(Number(salary)) && Number(salary) >= 0);
+  const validateExperience = (exp: string) => !exp || (!isNaN(Number(exp)) && Number(exp) >= 0 && Number(exp) < 100);
+
+  // Inline validation as user types
+  useEffect(() => {
+    const errors: {[key: string]: string} = {};
+    if (email && !validateEmail(email)) errors.email = 'Invalid email format.';
+    if (phoneNumber && !validatePhone(phoneNumber)) errors.phone_number = 'Invalid phone number.';
+    if (currentSalary && !validateSalary(currentSalary)) errors.current_salary = 'Invalid salary.';
+    if (expectedSalary && !validateSalary(expectedSalary)) errors.expected_salary = 'Invalid salary.';
+    if (yearsOfExperience && !validateExperience(yearsOfExperience)) errors.years_of_experience = 'Invalid experience.';
+    setFieldErrors(errors);
+  }, [email, phoneNumber, currentSalary, expectedSalary, yearsOfExperience]);
+
   // File handlers
   const handleResumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) setResume(e.target.files[0]);
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      if (!['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) {
+        setError('Resume must be a PDF or Word document.');
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) { // 5MB limit
+        setError('Resume file size must be less than 5MB.');
+        return;
+      }
+      setResume(file);
+    }
   };
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) setAvatar(e.target.files[0]);
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      if (!file.type.startsWith('image/')) {
+        setError('Avatar must be an image file.');
+        return;
+      }
+      if (file.size > 2 * 1024 * 1024) { // 2MB limit
+        setError('Avatar file size must be less than 2MB.');
+        return;
+      }
+      setAvatar(file);
+    }
   };
 
   // Save changes
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError('');
-    // Minimal validation
+    setFieldErrors({});
+    // Basic validation
     if (!firstName || !lastName || !email || !jobTitle) {
       setError('Please fill in all required fields.');
+      setFieldErrors({
+        firstName: !firstName ? 'Required' : '',
+        lastName: !lastName ? 'Required' : '',
+        email: !email ? 'Required' : '',
+        jobTitle: !jobTitle ? 'Required' : '',
+      });
       setLoading(false);
       return;
     }
+    // Stricter validation
+    if (!validateEmail(email)) {
+      setError('Invalid email format.');
+      setFieldErrors({ email: 'Invalid email format.' });
+      setLoading(false);
+      return;
+    }
+    if (phoneNumber && !validatePhone(phoneNumber)) {
+      setError('Invalid phone number.');
+      setFieldErrors({ phone_number: 'Invalid phone number.' });
+      setLoading(false);
+      return;
+    }
+    if (currentSalary && !validateSalary(currentSalary)) {
+      setError('Invalid current salary.');
+      setFieldErrors({ current_salary: 'Invalid salary.' });
+      setLoading(false);
+      return;
+    }
+    if (expectedSalary && !validateSalary(expectedSalary)) {
+      setError('Invalid expected salary.');
+      setFieldErrors({ expected_salary: 'Invalid salary.' });
+      setLoading(false);
+      return;
+    }
+    if (yearsOfExperience && !validateExperience(yearsOfExperience)) {
+      setError('Invalid years of experience.');
+      setFieldErrors({ years_of_experience: 'Invalid experience.' });
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     try {
       const formData = new FormData();
       formData.append('first_name', firstName);
@@ -103,13 +210,14 @@ const EditCandidate: React.FC = () => {
       formData.append('notes', notes);
       if (resume) formData.append('resume', resume);
       if (avatar) formData.append('avatar', avatar);
-      await axios.patch(`http://localhost:8000/api/candidates/${id}/`, formData, {
+      await api.patch(`http://localhost:8000/api/candidates/${id}/`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       setSuccess(true);
+      toast({ title: 'Candidate Updated', description: 'Candidate was updated successfully!' });
       setTimeout(() => {
         navigate(`/candidates/${id}`);
-      }, 1500);
+      }, 1000);
     } catch (err: any) {
       setError('Failed to save changes.');
     } finally {
@@ -120,7 +228,7 @@ const EditCandidate: React.FC = () => {
   if (loading) return <div className="text-center py-10">Loading...</div>;
 
   return (
-    <form className="max-w-4xl mx-auto space-y-6" onSubmit={handleSave}>
+    <form onSubmit={handleSave} aria-label="Edit Candidate Form" className="w-full px-2 sm:px-4 md:px-6 lg:px-8 xl:px-12 2xl:px-20 md:max-w-6xl lg:max-w-7xl xl:max-w-8xl 2xl:max-w-screen-2xl md:mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4">
         <Button 
@@ -139,7 +247,8 @@ const EditCandidate: React.FC = () => {
           </p>
         </div>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Main form grid: more columns and gap on xl+ */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6 xl:gap-8">
         {/* Main Form */}
         <div className="lg:col-span-2 space-y-6">
           {/* Personal Information */}
@@ -151,26 +260,39 @@ const EditCandidate: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="firstName">First Name</Label>
-                  <Input id="firstName" value={firstName} onChange={e => setFirstName(e.target.value)} />
+                  <Input id="firstName" value={firstName} onChange={e => setFirstName(e.target.value)} aria-required="true" />
+                  {fieldErrors.firstName && <p className="text-xs text-red-500">{fieldErrors.firstName}</p>}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="lastName">Last Name</Label>
-                  <Input id="lastName" value={lastName} onChange={e => setLastName(e.target.value)} />
+                  <Input id="lastName" value={lastName} onChange={e => setLastName(e.target.value)} aria-required="true" />
+                  {fieldErrors.lastName && <p className="text-xs text-red-500">{fieldErrors.lastName}</p>}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="email">Email Address</Label>
-                  <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+                  <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} aria-required="true" />
+                  {fieldErrors.email && <p className="text-xs text-red-500">{fieldErrors.email}</p>}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="phone">Phone Number</Label>
                   <Input id="phone" value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)} />
+                  {fieldErrors.phone_number && <p className="text-xs text-red-500">{fieldErrors.phone_number}</p>}
                 </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="location">Location</Label>
-                <Input id="location" value={city} onChange={e => setCity(e.target.value)} />
+                <Select value={city} onValueChange={setCity}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select city" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {cities.map(c => (
+                      <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </CardContent>
           </Card>
@@ -182,43 +304,62 @@ const EditCandidate: React.FC = () => {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="position">Position Applied For</Label>
-                <Input id="position" value={jobTitle} onChange={e => setJobTitle(e.target.value)} />
+                <Select value={jobTitle} onValueChange={setJobTitle}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select job title" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {jobTitles.map(jt => (
+                      <SelectItem key={jt.id} value={String(jt.id)}>{jt.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {fieldErrors.jobTitle && <p className="text-xs text-red-500">{fieldErrors.jobTitle}</p>}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="yearsOfExperience">Years of Experience</Label>
                   <Input id="yearsOfExperience" type="number" placeholder="e.g., 5" value={yearsOfExperience} onChange={e => setYearsOfExperience(e.target.value)} min={0} step={1} />
+                  {fieldErrors.years_of_experience && <p className="text-xs text-red-500">{fieldErrors.years_of_experience}</p>}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="salary">Expected Salary</Label>
                   <Input id="salary" value={expectedSalary} onChange={e => setExpectedSalary(e.target.value)} />
+                  {fieldErrors.expected_salary && <p className="text-xs text-red-500">{fieldErrors.expected_salary}</p>}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="currentSalary">Current Salary</Label>
                   <Input id="currentSalary" value={currentSalary} onChange={e => setCurrentSalary(e.target.value)} />
+                  {fieldErrors.current_salary && <p className="text-xs text-red-500">{fieldErrors.current_salary}</p>}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="source">Source</Label>
                   <Select value={source} onValueChange={setSource}>
                     <SelectTrigger>
-                      <SelectValue placeholder="How did they find us?" />
+                      <SelectValue placeholder="Select source" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="linkedin">LinkedIn</SelectItem>
-                      <SelectItem value="website">Company Website</SelectItem>
-                      <SelectItem value="referral">Employee Referral</SelectItem>
-                      <SelectItem value="indeed">Indeed</SelectItem>
-                      <SelectItem value="glassdoor">Glassdoor</SelectItem>
-                      <SelectItem value="other">Other</SelectItem>
+                      {sources.map(s => (
+                        <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="skills">Key Skills</Label>
-                <Input id="skills" value={communicationSkills} onChange={e => setCommunicationSkills(e.target.value)} placeholder="e.g., React, JavaScript, Node.js (comma separated)" />
+                <Select value={communicationSkills} onValueChange={setCommunicationSkills}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select communication skill" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {commSkills.map(cs => (
+                      <SelectItem key={cs.id} value={String(cs.id)}>{cs.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </CardContent>
           </Card>
@@ -277,7 +418,8 @@ const EditCandidate: React.FC = () => {
                 ) : (
                   <div className="p-3 border border-border rounded-lg bg-background/50 text-xs text-muted-foreground">No resume uploaded.</div>
                 )}
-                <input type="file" id="resume" onChange={handleResumeChange} className="hidden" title="Upload resume file" />
+                <input type="file" id="resume" onChange={handleResumeChange} className="hidden" title="Upload resume file" aria-describedby="resume-desc" />
+                <span id="resume-desc">Accepted: PDF, DOC, DOCX. Max 5MB.</span>
                 <Button variant="outline" size="sm" className="w-full" type="button" onClick={() => document.getElementById('resume')?.click()}>
                   <Upload className="h-4 w-4 mr-2" />
                   Replace Resume
@@ -293,7 +435,8 @@ const EditCandidate: React.FC = () => {
                 ) : (
                   <div className="p-3 border border-border rounded-lg bg-background/50 text-xs text-muted-foreground">No avatar uploaded.</div>
                 )}
-                <input type="file" id="avatar" onChange={handleAvatarChange} className="hidden" title="Upload avatar image" />
+                <input type="file" id="avatar" onChange={handleAvatarChange} className="hidden" title="Upload avatar image" aria-describedby="avatar-desc" />
+                <span id="avatar-desc">Accepted: Images only. Max 2MB.</span>
                 <Button variant="outline" size="sm" className="w-full" type="button" onClick={() => document.getElementById('avatar')?.click()}>
                   <Upload className="h-4 w-4 mr-2" />
                   Replace Avatar
@@ -328,7 +471,7 @@ const EditCandidate: React.FC = () => {
               </div>
             </CardContent>
           </Card>
-          {error && <div className="text-center text-red-500 mt-4">{error}</div>}
+          {error && <div className="text-center text-red-500 mt-4" role="alert">{error}</div>}
           {success && <div className="text-center text-green-500 mt-4">Changes saved! Redirecting...</div>}
         </div>
       </div>

@@ -7,9 +7,21 @@ import {
   ToastTitle,
   ToastViewport,
 } from "@/components/ui/toast"
+import { useEffect } from "react";
 
 export function Toaster() {
   const { toasts } = useToast()
+
+  // Update ARIA live region for screen readers
+  useEffect(() => {
+    if (toasts.length > 0) {
+      const toast = toasts[0];
+      const liveRegion = document.getElementById("aria-live-toast");
+      if (liveRegion) {
+        liveRegion.textContent = `${toast.title ? (typeof toast.title === 'string' ? toast.title : '') : ''} ${toast.description ? (typeof toast.description === 'string' ? toast.description : '') : ''}`.trim();
+      }
+    }
+  }, [toasts]);
 
   return (
     <ToastProvider>

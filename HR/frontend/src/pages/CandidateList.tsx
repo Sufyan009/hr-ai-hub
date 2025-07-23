@@ -10,7 +10,13 @@ import {
   Mail,
   Phone,
   MapPin,
-  Briefcase
+  Briefcase,
+  ChevronDown,
+  SortAsc,
+  SortDesc,
+  User,
+  Link2,
+  X
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,11 +36,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import axios from 'axios';
+import api from '@/services/api';
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { useToast } from '@/hooks/use-toast';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { useDebounce } from '@/hooks/useDebounce';
 
 interface Candidate {
   id: number;
@@ -42,14 +49,14 @@ interface Candidate {
   last_name: string;
   email: string;
   phone_number: string;
-  job_title: { name: string };
+  job_title_detail?: { name: string };
   candidate_stage: string;
   current_salary: number;
   expected_salary: number;
   years_of_experience: number;
-  communication_skills: { name: string };
-  city: { name: string };
-  source: { name: string };
+  communication_skills_detail?: { name: string };
+  city_detail?: { name: string };
+  source_detail?: { name: string };
   notes: string;
   resume?: string;
   avatar?: string;
@@ -60,15 +67,17 @@ const PAGE_SIZE = 15;
 const CandidateList: React.FC = () => {
   const { toast } = useToast();
   const location = useLocation();
+  const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebounce(searchTerm, 400);
   const [selectedStage, setSelectedStage] = useState('all');
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'az' | 'za' | 'most_exp' | 'least_exp'>('newest');
 
   const [jobTitles, setJobTitles] = useState<string[]>([]);
   const [cities, setCities] = useState<string[]>([]);
@@ -86,11 +95,18 @@ const CandidateList: React.FC = () => {
 
   const handlePendingFilterChange = (field: string, value: string) => {
     setPendingFilters(prev => ({ ...prev, [field]: value }));
+    setCustomFilters(prev => {
+      const filtered = prev.filter(f => f.field !== field);
+      if (!value) return filtered;
+      return [...filtered, { field, value }];
+    });
   };
+
   const handleApplyFilters = () => {
     setCustomFilters(Object.entries(pendingFilters).filter(([_, v]) => v).map(([field, value]) => ({ field, value })));
     setFilterPopoverOpen(false);
   };
+
   const handleClearAllFilters = () => {
     setCustomFilters([]);
     setPendingFilters({ job_title: '', city: '', source: '', communication_skills: '', candidate_stage: '' });
@@ -104,33 +120,30 @@ const CandidateList: React.FC = () => {
     { label: 'Communication Skills', value: 'communication_skills', options: commSkills },
     { label: 'Stage', value: 'candidate_stage', options: ['applied','screening','technical','interview','offer','hired'] },
   ];
-  const [customFilters, setCustomFilters] = useState<{ field: string, value: string }[]>([]);
-  const [addingFilter, setAddingFilter] = useState(false);
-  const [newFilterField, setNewFilterField] = useState('');
-  const [newFilterValue, setNewFilterValue] = useState('');
 
-  const handleAddFilter = () => {
-    if (newFilterField && newFilterValue) {
-      setCustomFilters([...customFilters, { field: newFilterField, value: newFilterValue }]);
-      setAddingFilter(false);
-      setNewFilterField('');
-      setNewFilterValue('');
+  const [customFilters, setCustomFilters] = useState<{ field: string, value: string }[]>([]);
+
+  const getOrderingParam = () => {
+    switch (sortOrder) {
+      case 'newest': return '-id';
+      case 'oldest': return 'id';
+      case 'az': return 'first_name';
+      case 'za': return '-first_name';
+      case 'most_exp': return '-years_of_experience';
+      case 'least_exp': return 'years_of_experience';
+      default: return '-id';
     }
-  };
-  const handleRemoveFilter = (idx: number) => {
-    setCustomFilters(customFilters.filter((_, i) => i !== idx));
   };
 
   useEffect(() => {
     setFiltersLoading(true);
-    const token = localStorage.getItem('authToken');
     const fetchFilterOptions = async () => {
       try {
         const [jtRes, cityRes, sourceRes, commRes] = await Promise.all([
-          axios.get('http://localhost:8000/api/jobtitles/', { headers: { 'Authorization': `Token ${token}` } }),
-          axios.get('http://localhost:8000/api/cities/', { headers: { 'Authorization': `Token ${token}` } }),
-          axios.get('http://localhost:8000/api/sources/', { headers: { 'Authorization': `Token ${token}` } }),
-          axios.get('http://localhost:8000/api/communicationskills/', { headers: { 'Authorization': `Token ${token}` } }),
+          api.get('/jobtitles/'),
+          api.get('/cities/'),
+          api.get('/sources/'),
+          api.get('/communicationskills/'),
         ]);
         setJobTitles(jtRes.data.map((jt: any) => jt.name));
         setCities(cityRes.data.map((c: any) => c.name));
@@ -151,9 +164,10 @@ const CandidateList: React.FC = () => {
       try {
         const params = new URLSearchParams();
         params.append('page', String(page));
-        if (search) params.append('search', search);
+        if (debouncedSearch) params.append('search', debouncedSearch);
         customFilters.forEach(f => params.append(f.field, f.value));
-        const res = await axios.get(`http://localhost:8000/api/candidates/?${params.toString()}`);
+        params.append('ordering', getOrderingParam());
+        const res = await api.get(`/candidates/?${params.toString()}`);
         setCandidates(res.data.results);
         setCount(res.data.count);
       } catch (err) {
@@ -163,10 +177,9 @@ const CandidateList: React.FC = () => {
       }
     };
     fetchCandidates();
-  }, [page, search, customFilters]);
+  }, [page, debouncedSearch, customFilters, sortOrder]);
 
   useEffect(() => {
-    // On mount, check for ?stage= in the URL
     const params = new URLSearchParams(location.search);
     const stage = params.get('stage');
     if (stage) setSelectedStage(stage);
@@ -174,30 +187,19 @@ const CandidateList: React.FC = () => {
 
   const getStageColor = (stage: string) => {
     switch (stage.toLowerCase()) {
-      case 'applied':
-        return 'bg-muted text-muted-foreground';
-      case 'screening':
-        return 'bg-blue-100 text-blue-800';
-      case 'technical':
-        return 'bg-purple-100 text-purple-800';
-      case 'interview':
-        return 'bg-orange-100 text-orange-800';
-      case 'offer':
-        return 'bg-green-100 text-green-800';
-      case 'hired':
-        return 'bg-success text-success-foreground';
-      case 'rejected':
-        return 'bg-destructive text-destructive-foreground';
-      default:
-        return 'bg-muted text-muted-foreground';
+      case 'applied': return 'bg-gray-100 text-gray-800';
+      case 'screening': return 'bg-blue-100 text-blue-800';
+      case 'technical': return 'bg-purple-100 text-purple-800';
+      case 'interview': return 'bg-orange-100 text-orange-800';
+      case 'offer': return 'bg-green-100 text-green-800';
+      case 'hired': return 'bg-teal-100 text-teal-800';
+      case 'rejected': return 'bg-red-100 text-red-800';
+      default: return 'bg-gray-100 text-gray-800';
     }
   };
 
-  // Remove filteredCandidates, use candidates directly from backend
-
   const totalPages = Math.ceil(count / PAGE_SIZE);
 
-  // Smart pagination window
   const getPageNumbers = () => {
     const window = 2;
     let pages = [];
@@ -215,16 +217,14 @@ const CandidateList: React.FC = () => {
         pages.push('...');
       }
     }
-    // Remove consecutive '...'
     return pages.filter((v, i, arr) => v !== '...' || arr[i - 1] !== '...');
   };
 
-  // Delete functionality
   const handleDelete = async (id: number) => {
     if (!window.confirm('Are you sure you want to delete this candidate?')) return;
     setDeletingId(id);
     try {
-      await axios.delete(`http://localhost:8000/api/candidates/${id}/`);
+      await api.delete(`/candidates/${id}/`);
       setCandidates(candidates.filter(c => c.id !== id));
       setCount(count - 1);
       toast({ title: 'Candidate deleted', description: 'The candidate has been removed.' });
@@ -235,252 +235,395 @@ const CandidateList: React.FC = () => {
     }
   };
 
+  const handleExport = async () => {
+    try {
+      const params = new URLSearchParams();
+      customFilters.forEach(f => params.append(f.field, f.value));
+      params.append('ordering', getOrderingParam());
+      const res = await api.get(`/candidates/export/csv/?${params.toString()}`, {
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'candidates.csv');
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode?.removeChild(link);
+    } catch {
+      toast({ title: 'Export Failed', description: 'Could not export candidates.', variant: 'destructive' });
+    }
+  };
+
+  const handleView = (id: number) => {
+    navigate(`/candidates/${id}`);
+  };
+
+  const handleEdit = (id: number) => {
+    navigate(`/candidates/${id}/edit`);
+  };
+
+  // Implement handleRemoveFilter
+  const handleRemoveFilter = (idx: number) => {
+    setCustomFilters(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full py-10 bg-gray-50 dark:bg-gray-900 rounded-lg">
+        <div className="text-red-600 dark:text-red-400 font-medium mb-4 text-lg">{error}</div>
+        <Button
+          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg px-6 py-2"
+          onClick={() => window.location.reload()}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-6xl mx-auto p-4">
-      <div className="flex flex-col sm:flex-row flex-wrap justify-between items-center mb-6 gap-4 sticky top-0 z-30 bg-white dark:bg-gray-900/90 dark:backdrop-blur dark:shadow dark:text-gray-100 rounded animate-fade-in">
-        <input
-          className="border rounded px-4 py-2 w-full sm:w-1/3 focus:outline-primary"
+    <div className="container mx-auto px-4 py-8 max-w-7xl">
+      <Card className="shadow-xl border-0">
+        <CardHeader className="border-b bg-gray-50 dark:bg-gray-800">
+          <CardTitle className="text-2xl font-semibold text-gray-800 dark:text-gray-100">
+            Candidate Management
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-6">
+          {/* Header Row */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div className="flex items-center w-full sm:w-auto">
+              <div className="relative flex-1 max-w-md">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Input
+                  className="pl-10 pr-10 py-2 rounded-lg border-gray-300 focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100"
           placeholder="Search candidates..."
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
         />
-        <div className="flex flex-wrap gap-2 items-center">
+                {searchTerm && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 hover:bg-gray-100 dark:hover:bg-gray-600"
+                    onClick={() => { setSearchTerm(''); }}
+                    aria-label="Clear search"
+                  >
+                    <X className="h-4 w-4 text-gray-500" />
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3">
           <Popover open={filterPopoverOpen} onOpenChange={setFilterPopoverOpen}>
             <PopoverTrigger asChild>
-              <Button variant="outline" className="gap-2">
+                  <Button
+                    variant="outline"
+                    className="h-10 px-4 text-sm font-medium flex items-center gap-2 border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
                 <Filter className="h-4 w-4" />
                 Filters
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-80">
+                <PopoverContent className="w-80 p-4 bg-white dark:bg-gray-800 rounded-lg shadow-lg">
+                  <div className="space-y-4">
+                    <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Filter Candidates</h3>
+                    {filtersLoading ? (
               <div className="space-y-3">
-                <div className="font-semibold mb-2">Filter Candidates</div>
-                {filtersLoading ? (
-                  <div className="space-y-2">
-                    <div className="h-8 bg-muted rounded animate-pulse" />
-                    <div className="h-8 bg-muted rounded animate-pulse" />
-                    <div className="h-8 bg-muted rounded animate-pulse" />
-                    <div className="h-8 bg-muted rounded animate-pulse" />
-                    <div className="h-8 bg-muted rounded animate-pulse" />
+                        {[...Array(5)].map((_, i) => (
+                          <div key={i} className="h-8 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
+                        ))}
                   </div>
                 ) : (
                   <>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <select title="Job Title" className="border rounded px-2 py-1 w-full" value={pendingFilters.job_title} onChange={e => handlePendingFilterChange('job_title', e.target.value)}>
-                          <option value="">All Job Titles</option>
-                          {jobTitles.map(jt => <option key={jt} value={jt}>{jt}</option>)}
+                        {filterFields.map(field => (
+                          <div key={field.value}>
+                            <label className="text-sm font-medium text-gray-700 dark:text-gray-200">{field.label}</label>
+                            <select
+                              className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 py-2 px-3 text-sm"
+                              value={pendingFilters[field.value as keyof typeof pendingFilters]}
+                              onChange={e => handlePendingFilterChange(field.value, e.target.value)}
+                              title={field.label}
+                            >
+                              <option value="">All {field.label}s</option>
+                              {field.options.map(option => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
                         </select>
-                      </TooltipTrigger>
-                      <TooltipContent>Select a job title to filter candidates</TooltipContent>
-                    </Tooltip>
-                    {jobTitles[0] === 'No job titles available' && <div className="text-xs text-muted-foreground">No job titles found in the system.</div>}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <select title="City" className="border rounded px-2 py-1 w-full" value={pendingFilters.city} onChange={e => handlePendingFilterChange('city', e.target.value)}>
-                          <option value="">All Cities</option>
-                          {cities.map(c => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                      </TooltipTrigger>
-                      <TooltipContent>Select a city to filter candidates</TooltipContent>
-                    </Tooltip>
-                    {cities[0] === 'No cities available' && <div className="text-xs text-muted-foreground">No cities found in the system.</div>}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <select title="Source" className="border rounded px-2 py-1 w-full" value={pendingFilters.source} onChange={e => handlePendingFilterChange('source', e.target.value)}>
-                          <option value="">All Sources</option>
-                          {sources.map(s => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </TooltipTrigger>
-                      <TooltipContent>Select a source to filter candidates</TooltipContent>
-                    </Tooltip>
-                    {sources[0] === 'No sources available' && <div className="text-xs text-muted-foreground">No sources found in the system.</div>}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <select title="Communication Skills" className="border rounded px-2 py-1 w-full" value={pendingFilters.communication_skills} onChange={e => handlePendingFilterChange('communication_skills', e.target.value)}>
-                          <option value="">All Communication Skills</option>
-                          {commSkills.map(cs => <option key={cs} value={cs}>{cs}</option>)}
-                        </select>
-                      </TooltipTrigger>
-                      <TooltipContent>Select communication skills to filter candidates</TooltipContent>
-                    </Tooltip>
-                    {commSkills[0] === 'No skills available' && <div className="text-xs text-muted-foreground">No communication skills found in the system.</div>}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <select title="Stage" className="border rounded px-2 py-1 w-full" value={pendingFilters.candidate_stage} onChange={e => handlePendingFilterChange('candidate_stage', e.target.value)}>
-                          <option value="">All Stages</option>
-                          <option value="applied">Applied</option>
-                          <option value="screening">Screening</option>
-                          <option value="technical">Technical</option>
-                          <option value="interview">Interview</option>
-                          <option value="offer">Offer</option>
-                          <option value="hired">Hired</option>
-                        </select>
-                      </TooltipTrigger>
-                      <TooltipContent>Select a stage to filter candidates</TooltipContent>
-                    </Tooltip>
+                            {field.options[0]?.includes('No') && (
+                              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                No {field.label.toLowerCase()}s found in the system.
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        <div className="flex gap-2 pt-2">
+                          <Button
+                            variant="outline"
+                            className="flex-1 text-sm"
+                            onClick={handleClearAllFilters}
+                            disabled={filtersLoading}
+                          >
+                            Clear All
+                          </Button>
+                          <Button
+                            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm"
+                            onClick={handleApplyFilters}
+                            disabled={filtersLoading}
+                          >
+                            Apply
+                          </Button>
+                        </div>
                   </>
                 )}
-                <div className="flex gap-2 mt-2">
-                  <Button size="sm" className="flex-1" onClick={handleApplyFilters} disabled={filtersLoading}>Apply</Button>
-                  <Button size="sm" variant="ghost" className="flex-1" onClick={handleClearAllFilters} disabled={filtersLoading}>Clear All</Button>
-                </div>
               </div>
             </PopoverContent>
           </Popover>
-          {customFilters.map((f, idx) => (
-            <span key={f.field + f.value} className="flex items-center gap-1 bg-primary/10 text-primary px-2 py-1 rounded-full text-xs animate-fade-in">
-              {filterFields.find(ff => ff.value === f.field)?.label || f.field}: {f.value}
-              <button className="ml-1 text-primary hover:text-destructive" onClick={() => handleRemoveFilter(idx)}>&times;</button>
-            </span>
-          ))}
-        </div>
-        <Button variant="outline" className="gap-2">
-          <Download className="h-4 w-4" />
-          Export
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="h-10 px-4 text-sm font-medium flex items-center gap-2 border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
+                    <SortAsc className="h-4 w-4" />
+                    Sort
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="bg-white dark:bg-gray-800 shadow-lg rounded-lg">
+                  <DropdownMenuItem
+                    onClick={() => setSortOrder('newest')}
+                    className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <SortDesc className="h-4 w-4" /> Newest First
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setSortOrder('oldest')}
+                    className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <SortAsc className="h-4 w-4" /> Oldest First
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setSortOrder('az')}
+                    className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <User className="h-4 w-4" /> A-Z (First Name)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setSortOrder('za')}
+                    className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <User className="h-4 w-4" /> Z-A (First Name)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setSortOrder('most_exp')}
+                    className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <User className="h-4 w-4" /> Most Experience
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setSortOrder('least_exp')}
+                    className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <User className="h-4 w-4" /> Least Experience
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button
+                variant="outline"
+                className="h-10 px-4 text-sm font-medium flex items-center gap-2 border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                onClick={handleExport}
+              >
+                <Download className="h-4 w-4" /> Export
         </Button>
         <Button 
-          className="bg-gradient-primary hover:shadow-glow transition-all duration-300"
-          onClick={() => window.location.href = '/candidates/new'}
+                className="h-10 px-4 text-sm font-semibold flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white"
+                onClick={() => navigate('/candidates/new')}
         >
-          <Plus className="h-4 w-4 mr-2" />
-          Add Candidate
+                <Plus className="h-4 w-4" /> Add Candidate
         </Button>
       </div>
-      <div className="overflow-x-auto rounded-lg shadow border bg-white dark:bg-gray-900 dark:text-gray-100">
-        {loading ? (
-          <div className="p-8">
-            <div className="h-8 bg-muted rounded animate-pulse mb-2" />
-            <div className="h-8 bg-muted rounded animate-pulse mb-2" />
-            <div className="h-8 bg-muted rounded animate-pulse mb-2" />
-            <div className="h-8 bg-muted rounded animate-pulse mb-2" />
-            <div className="h-8 bg-muted rounded animate-pulse mb-2" />
           </div>
-        ) : (
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left">Position</th>
-                <th className="px-4 py-3 text-left">Stage</th>
-                <th className="px-4 py-3 text-left">Experience</th>
-                <th className="px-4 py-3 text-left">Location</th>
-                <th className="px-4 py-3 text-left">Source</th>
-                <th className="px-4 py-3 text-left">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {candidates.map((candidate, index) => (
-                <tr
-                  key={`candidate-${candidate.id}-${index}`}
-                  className="hover:bg-primary/5 transition-colors group border-b last:border-b-0 animate-fade-in"
+
+          {/* Filters Display */}
+          {customFilters.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-4">
+              {customFilters.map((filter, idx) => (
+                <Badge
+                  key={idx}
+                  className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 px-3 py-1"
                 >
-                  <td className="px-4 py-3 font-medium flex items-center gap-2">
-                    <div className="h-10 w-10 rounded-full bg-gradient-primary flex items-center justify-center text-primary-foreground font-medium">
-                      {((candidate.first_name || '')[0] || '') + ((candidate.last_name || '')[0] || '')}
+                  {filterFields.find(f => f.value === filter.field)?.label}: {filter.value}
+                  <button
+                    onClick={() => handleRemoveFilter(idx)}
+                    className="ml-2 hover:text-blue-600"
+                    title={`Remove ${filterFields.find(f => f.value === filter.field)?.label} filter`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+          )}
+
+          {/* Table */}
+          <div className="overflow-x-auto rounded-lg border bg-white dark:bg-gray-800">
+            {loading ? (
+              <div className="p-6 space-y-3">
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="h-12 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
+                ))}
+              </div>
+            ) : (
+              <Table className="min-w-full">
+                <TableHeader className="bg-gray-50 dark:bg-gray-700">
+                  <TableRow>
+                    <TableHead className="px-4 py-3 text-left font-semibold text-gray-800 dark:text-gray-100">Name</TableHead>
+                    <TableHead className="px-4 py-3 text-left font-semibold text-gray-800 dark:text-gray-100">Position</TableHead>
+                    <TableHead className="px-4 py-3 text-left font-semibold text-gray-800 dark:text-gray-100">Stage</TableHead>
+                    <TableHead className="px-4 py-3 text-left font-semibold text-gray-800 dark:text-gray-100">Experience</TableHead>
+                    <TableHead className="px-4 py-3 text-left font-semibold text-gray-800 dark:text-gray-100">Location</TableHead>
+                    <TableHead className="px-4 py-3 text-left font-semibold text-gray-800 dark:text-gray-100">Source</TableHead>
+                    <TableHead className="px-4 py-3 text-left font-semibold text-gray-800 dark:text-gray-100">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {candidates.map(candidate => (
+                    <TableRow
+                      key={candidate.id}
+                      className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors duration-200"
+                >
+                      <TableCell className="px-4 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-semibold text-lg uppercase">
+                            {((candidate.first_name || '')[0] || '') + ((candidate.last_name || '')[0] || '') || <User className="h-5 w-5" />}
                     </div>
-                    <div>
-                      <p className="font-medium text-foreground">{candidate.first_name} {candidate.last_name}</p>
-                      <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Mail className="h-3 w-3" />
-                          {candidate.email}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Phone className="h-3 w-3" />
-                          {candidate.phone_number}
-                        </span>
+                          <div className="flex flex-col">
+                            <span className="font-medium text-gray-800 dark:text-gray-100">{`${candidate.first_name || ''} ${candidate.last_name || ''}`.trim()}</span>
+                            <span className="text-sm text-gray-500 dark:text-gray-400">{candidate.email}</span>
+                            <span className="text-sm text-gray-500 dark:text-gray-400">{candidate.phone_number}</span>
                       </div>
                     </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="inline-block bg-muted text-muted-foreground rounded px-2 py-1 text-xs">
-                      {candidate.job_title.name}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
+                      </TableCell>
+                      <TableCell className="px-4 py-4">
+                        <Badge variant="secondary" className="bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100">
+                          <Briefcase className="h-3 w-3 mr-1 text-blue-500" />
+                          {candidate.job_title_detail?.name || '—'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="px-4 py-4">
                     <Badge className={getStageColor(candidate.candidate_stage)}>
                       {candidate.candidate_stage}
                     </Badge>
-                  </td>
-                  <td className="px-4 py-3">{candidate.years_of_experience ? `${candidate.years_of_experience} years` : '—'}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1 text-muted-foreground">
+                      </TableCell>
+                      <TableCell className="px-4 py-4">
+                        <span className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-300">
+                          <Briefcase className="h-3 w-3" />
+                          {candidate.years_of_experience ? `${candidate.years_of_experience} years` : '—'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-4">
+                        <span className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-300">
                       <MapPin className="h-3 w-3" />
-                      {candidate.city.name}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1 text-muted-foreground">
-                      {candidate.source.name}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 flex gap-2 items-center">
+                          {candidate.city_detail?.name || '—'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-4">
+                        <span className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-300">
+                          <Link2 className="h-3 w-3" />
+                          {candidate.source_detail?.name || '—'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-4">
+                        <div className="flex gap-2">
+                          <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <button className="hover:text-primary transition-colors" onClick={() => window.location.href = `/candidates/${candidate.id}`}>
-                          <span className="sr-only">View</span>
-                          <Eye className="h-5 w-5" />
-                        </button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => handleView(candidate.id)}
+                                  className="hover:bg-blue-100 dark:hover:bg-blue-900"
+                                >
+                                  <Eye className="h-4 w-4 text-blue-600" />
+                                </Button>
                       </TooltipTrigger>
                       <TooltipContent>View</TooltipContent>
                     </Tooltip>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <button className="hover:text-primary transition-colors" onClick={() => window.location.href = `/candidates/${candidate.id}/edit`}>
-                          <span className="sr-only">Edit</span>
-                          <Edit className="h-5 w-5" />
-                        </button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => handleEdit(candidate.id)}
+                                  className="hover:bg-blue-100 dark:hover:bg-blue-900"
+                                >
+                                  <Edit className="h-4 w-4 text-blue-600" />
+                                </Button>
                       </TooltipTrigger>
                       <TooltipContent>Edit</TooltipContent>
                     </Tooltip>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <button
-                          className={`hover:text-destructive transition-colors ${deletingId === candidate.id ? 'opacity-50 pointer-events-none' : ''}`}
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
                           onClick={() => handleDelete(candidate.id)}
+                                  className="hover:bg-red-100 dark:hover:bg-red-900"
                           disabled={deletingId === candidate.id}
                         >
-                          <span className="sr-only">Delete</span>
-                          <Trash2 className="h-5 w-5" />
-                        </button>
+                                  <Trash2 className="h-4 w-4 text-red-600" />
+                                </Button>
                       </TooltipTrigger>
                       <TooltipContent>Delete</TooltipContent>
                     </Tooltip>
-                  </td>
-                </tr>
+                          </TooltipProvider>
+                        </div>
+                      </TableCell>
+                    </TableRow>
               ))}
-            </tbody>
-          </table>
+                </TableBody>
+              </Table>
         )}
       </div>
-      {/* Pagination controls */}
-      <div className="flex justify-center mt-6 gap-1 flex-wrap">
-        <button
+
+          {/* Pagination */}
+          <div className="flex justify-center mt-6 gap-2 flex-wrap">
+            <Button
           disabled={page === 1}
           onClick={() => setPage(page - 1)}
-          className="px-3 py-1 rounded border bg-white hover:bg-primary/10 disabled:opacity-50"
+              className="px-4 py-2 text-sm font-medium bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
         >
           Previous
-        </button>
+            </Button>
         {getPageNumbers().map((p, idx) =>
-          p === '...'
-            ? <span key={`ellipsis-${idx}`} className="px-2 py-1">...</span>
-            : <button
+              p === '...' ? (
+                <span key={`ellipsis-${idx}`} className="px-3 py-2 text-gray-500 dark:text-gray-400">...</span>
+              ) : (
+                <Button
                 key={`page-${p}-${idx}`}
                 onClick={() => setPage(Number(p))}
-                className={`px-3 py-1 rounded border ${page === p ? 'bg-primary text-white' : 'bg-white hover:bg-primary/10'}`}
+                  className={`px-4 py-2 text-sm font-medium ${
+                    page === p
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'
+                  }`}
               >
                 {p}
-              </button>
+                </Button>
+              )
         )}
-        <button
+            <Button
           disabled={page === totalPages}
           onClick={() => setPage(page + 1)}
-          className="px-3 py-1 rounded border bg-white hover:bg-primary/10 disabled:opacity-50"
+              className="px-4 py-2 text-sm font-medium bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
         >
           Next
-        </button>
+            </Button>
       </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };
