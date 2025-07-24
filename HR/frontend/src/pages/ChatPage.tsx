@@ -1,29 +1,31 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { 
-  Send, Bot, User, Settings, Eraser, Copy, MoreVertical, Sparkles, Shield, 
-  Clock, Check, ChevronDown, Zap, Brain, Award, MessageSquare, RefreshCw,
-  Volume2, VolumeX, Download, Star, TrendingUp
+import {
+  Send, Bot, User, Settings, Eraser, Copy, MoreVertical, MessageSquare, RefreshCw,
+  Volume2, VolumeX, Download, Building2, Shield, TrendingUp, Users, Pencil, Plus, Check, X, Trash2, ChevronLeft, ChevronRight, Paperclip, AppWindow, Megaphone, Brush, Globe, PenTool, Mic, ArrowUp
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useToast } from '@/hooks/use-toast';
 import { Textarea } from '@/components/ui/textarea';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useToast } from '@/components/ui/use-toast';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
-import { Progress } from '@/components/ui/progress';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Card, CardContent } from '@/components/ui/card';
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
-import { sendMessage as sendChatMessage, fetchModels } from '@/services/chatService';
+import { sendMessage, fetchModels, getChatSessions, createChatSession, deleteChatSession, getChatMessages, createChatMessage, updateChatSession } from '@/services/chatService';
+import { format } from 'date-fns';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '@/contexts/AuthContext';
+import ChatSidebar from '@/components/layout/ChatSidebar';
 
+// Interfaces
 interface Message {
   id: string;
   type: 'user' | 'bot' | 'error' | 'system';
@@ -41,8 +43,10 @@ interface ChatStats {
   sessionsToday: number;
 }
 
-// ErrorBoundary component
-class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: any}> {
+const SIDEBAR_COLLAPSED_KEY = 'chatSidebarCollapsed';
+
+// ErrorBoundary Component
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
   constructor(props: any) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -50,15 +54,12 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
   static getDerivedStateFromError(error: any) {
     return { hasError: true, error };
   }
-  componentDidCatch(error: any, errorInfo: any) {
-    // You can log errorInfo here if needed
-  }
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex flex-col items-center justify-center min-h-screen bg-red-50 dark:bg-red-900/10">
-          <div className="text-2xl font-bold text-red-700 dark:text-red-300 mb-4">Something went wrong</div>
-          <div className="text-red-600 dark:text-red-200 text-sm max-w-xl break-all">{String(this.state.error)}</div>
+        <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-950 p-4">
+          <div className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">System Error</div>
+          <div className="text-red-500 dark:text-red-300 text-sm max-w-xl text-center">{String(this.state.error)}</div>
         </div>
       );
     }
@@ -66,111 +67,447 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
   }
 }
 
+// Professional Header Component
+const ChatHeader: React.FC<{
+  selectedModel: string;
+  models: any[];
+  chatStats: ChatStats;
+  onOpenConfig: () => void;
+  onExportChat: () => void;
+  onClearChat: () => void;
+  sessionModel: string;
+  onModelChange: (modelId: string) => void;
+  availableModels: any[];
+}> = ({ selectedModel, models, chatStats, onOpenConfig, onExportChat, onClearChat, sessionModel, onModelChange, availableModels }) => {
+  const modelData = models.find(m => m.id === selectedModel) || { label: 'Loading...', badge: '' };
+  
+  return (
+    <div className="sticky top-0 z-20 bg-white/95 dark:bg-slate-950/95 backdrop-blur-sm border-b border-slate-200/60 dark:border-slate-800/60 shadow-sm">
+      <div className="px-6 py-4">
+        <div className="flex items-center justify-between">
+          {/* Brand Section */}
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <Avatar className="h-10 w-10 ring-2 ring-slate-200 dark:ring-slate-700">
+                <AvatarFallback className="bg-gradient-to-br from-blue-600 to-indigo-700 text-white font-semibold">
+                  <Building2 className="h-5 w-5" />
+                </AvatarFallback>
+              </Avatar>
+              <div className="absolute -bottom-1 -right-1 h-4 w-4 bg-emerald-500 rounded-full border-2 border-white dark:border-slate-950"></div>
+            </div>
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                {/* Status row removed */}
+              </div>
+            </div>
+          </div>
+
+          {/* Stats & Actions */}
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
+              <div className="flex items-center gap-1">
+                <MessageSquare className="h-4 w-4" />
+                <span className="font-medium">{chatStats.totalMessages}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <TrendingUp className="h-4 w-4" />
+                <span className="font-medium">{chatStats.averageResponseTime}s</span>
+              </div>
+            </div>
+            
+            <Separator orientation="vertical" className="h-6 hidden md:block" />
+            
+            <div className="flex items-center gap-1">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-9 w-9" onClick={onClearChat}>
+                      <Eraser className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Clear conversation</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-9 w-9">
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuItem onClick={onOpenConfig} className="cursor-pointer">
+                    <Settings className="h-4 w-4 mr-3" />
+                    Settings & Configuration
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={onExportChat} className="cursor-pointer">
+                    <Download className="h-4 w-4 mr-3" />
+                    Export Conversation
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Enhanced Message Component
+const ChatMessage = React.forwardRef<HTMLDivElement, { message: Message; onCopy: (content: string) => void }>(
+  ({ message, onCopy }, ref) => {
+  const isUser = message.type === 'user';
+  const isSystem = message.type === 'system';
+  const isError = message.type === 'error';
+  
+  return (
+    <motion.div
+      ref={ref}
+      initial={{ opacity: 0, y: 15 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: "easeOut" }}
+      className={`flex gap-4 group px-6 ${isUser ? 'justify-end' : 'justify-start'}`}
+    >
+      
+      <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[75%]`}>
+        <Card className={`group-hover:shadow-md transition-all duration-200 border-0 ${
+          isUser 
+            ? 'bg-[#6B7280] text-white shadow-lg' 
+            : isError
+              ? 'bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+              : isSystem
+                ? 'bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/20 dark:to-teal-950/20 border border-emerald-200 dark:border-emerald-800'
+                : 'bg-white dark:bg-slate-900 shadow-sm border border-slate-200 dark:border-slate-800'
+        }`}>
+          <CardContent className="p-4 relative">
+            <div className={`prose prose-sm max-w-none ${
+              isUser ? 'prose-invert' : 
+              isSystem ? 'prose-emerald dark:prose-invert' :
+              'dark:prose-invert'
+            }`}>
+              <ReactMarkdown
+                rehypePlugins={[rehypeRaw]}
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                  ul: ({ children }) => <ul className="mb-2 last:mb-0">{children}</ul>,
+                  ol: ({ children }) => <ol className="mb-2 last:mb-0">{children}</ol>,
+                }}
+              >
+                {typeof message.content === 'string' ? message.content : JSON.stringify(message.content)}
+              </ReactMarkdown>
+            </div>
+            
+            {/* Copy Button */}
+            <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className={`h-7 w-7 p-0 ${isUser ? 'hover:bg-white/20' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      onClick={() => onCopy(message.content)}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Copy message</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+          </CardContent>
+        </Card>
+        
+      </div>
+      
+    </motion.div>
+  );
+});
+
+// Professional Input Bar
+const InputBar = ({ 
+  value, 
+  onChange, 
+  onSend, 
+  isLoading, 
+  disabled, 
+  onNewChat,
+  selectedModel,
+  availableModels,
+  onModelChange,
+}) => (
+  <div className="flex flex-col gap-2 w-full px-4 pb-4">
+    <div className="relative w-full">
+      <Textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Ask anything"
+        className="w-full rounded-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white px-6 py-4 pr-14 border-0 shadow-none focus:ring-2 focus:ring-blue-500 focus:outline-none text-lg placeholder:text-slate-400 min-h-[56px] max-h-[120px] resize-none"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && !isLoading && !disabled) {
+            e.preventDefault();
+            onSend();
+          }
+        }}
+        disabled={disabled}
+        aria-label="Enter your query"
+        style={{ fontWeight: 500 }}
+      />
+      <Button
+        variant="ghost"
+        size="icon"
+        className={`absolute right-2 top-1/2 -translate-y-1/2 h-12 w-12 rounded-full flex items-center justify-center border-0 shadow-none transition
+    ${value.trim() ? 'bg-zinc-800 hover:bg-zinc-700' : 'bg-white hover:bg-gray-200'}`}
+  onClick={onSend}
+  disabled={isLoading || disabled || !value.trim()}
+  aria-label="Send message"
+>
+  <ArrowUp className={`h-6 w-6 ${value.trim() ? 'text-white' : 'text-zinc-900'}`} />
+</Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="absolute right-14 top-1/2 -translate-y-1/2 h-10 w-10 text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
+        aria-label="Voice input"
+        type="button"
+        disabled
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+      </Button>
+    </div>
+    <div className="flex items-center gap-2 mt-2">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full h-10 w-10 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/80 text-white"
+            aria-label="Add"
+            type="button"
+          >
+            <Plus className="h-5 w-5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-60 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white">
+          <DropdownMenuItem className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700">
+            <Paperclip className="h-4 w-4 mr-2" />
+            <span>Add photos & files</span>
+          </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700">
+              <AppWindow className="h-4 w-4 mr-2" />
+              <span>Add from apps</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-56 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800">
+              <DropdownMenuItem disabled className="text-slate-400">Coming soon…</DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-full flex items-center gap-2 h-10 px-4 font-medium text-sm bg-slate-700/80 hover:bg-slate-600/80 text-white shadow-none border-none"
+            aria-label="Tools"
+            type="button"
+          >
+            <Settings className="h-5 w-5" />
+            <span className="hidden md:inline">Tools</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-72 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white">
+          {[
+            { name: 'Get Candidate', desc: 'get_candidate <candidate_id>', icon: <User className="h-5 w-5 mr-2" /> },
+            { name: 'Delete Candidate', desc: 'delete_candidate <candidate_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+            { name: 'Update Candidate', desc: 'update_candidate <candidate_id> <field> <value>', icon: <Pencil className="h-5 w-5 mr-2" /> },
+            { name: 'Candidate Metrics', desc: 'get_candidate_metrics', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
+            { name: 'List Candidates', desc: 'list_candidates', icon: <Users className="h-5 w-5 mr-2" /> },
+          ].map(tool => (
+            <DropdownMenuItem
+              key={tool.name}
+              onClick={() => onChange(tool.desc)}
+              className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700 text-sm"
+            >
+              {tool.icon}
+              <span>{tool.name}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Select
+        value={selectedModel}
+        onValueChange={onModelChange}
+        disabled={disabled}
+      >
+        <SelectTrigger className="w-[180px] text-sm bg-slate-700/80 hover:bg-slate-600/80 text-white rounded-full h-10 px-4">
+          <SelectValue placeholder="Select Model" />
+        </SelectTrigger>
+        <SelectContent style={{ maxHeight: 240, overflowY: 'auto' }}>
+          {availableModels.map((model) => (
+            <SelectItem key={model.id} value={model.id}>
+              {model.label || model.id}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  </div>
+);
+
+// Typing Indicator
+const TypingIndicator = React.forwardRef<HTMLDivElement>((props, ref) => (
+  <motion.div
+    ref={ref}
+    initial={{ opacity: 0, y: 15 }}
+    animate={{ opacity: 1, y: 0 }}
+    exit={{ opacity: 0, y: -15 }}
+    transition={{ duration: 0.3 }}
+    className="flex gap-4 px-6"
+  >
+    <Avatar className="h-8 w-8 mt-1 ring-2 ring-blue-200 dark:ring-blue-800">
+      <AvatarFallback className="bg-gradient-to-br from-blue-500 to-indigo-600 text-white">
+        <Bot className="h-4 w-4" />
+      </AvatarFallback>
+    </Avatar>
+    <Card className="bg-white dark:bg-slate-900 shadow-sm border border-slate-200 dark:border-slate-800">
+      <CardContent className="p-4 flex items-center gap-3">
+        <span className="text-sm text-slate-600 dark:text-slate-400 font-medium">Analyzing your request</span>
+        <div className="flex gap-1">
+          <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
+          <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
+          <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
+        </div>
+      </CardContent>
+    </Card>
+  </motion.div>
+));
+
+// Main Component
 const HRAssistantPro: React.FC = () => {
   const { toast } = useToast();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [messages, setMessages] = useState<Message[]>(() => {
-    const saved = localStorage.getItem('hrAssistantMessages');
-    return saved ? JSON.parse(saved) : [
-      {
-        id: '1',
-        type: 'system',
-        // Only show a short greeting, not the full prompt
-        content: `👋 Welcome! How can I help you with HR today?`,
-        timestamp: new Date(),
-        confidence: 100,
-        model: 'System'
-      }
-    ];
-  });
   
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: '1',
+      type: 'system',
+      content: `👋 Welcome to HR Assistant Pro! How can I help you with HR today?`,
+      timestamp: new Date(),
+      confidence: 100,
+      model: 'System',
+    },
+  ]);
+
+  // Auth integration for logout/destruct
+  const { user, isAuthenticated } = useAuth();
+  useEffect(() => {
+    if (!user || !isAuthenticated) {
+      setMessages([
+        {
+          id: '1',
+          type: 'system',
+          content: `👋 Welcome to HR Assistant Pro! How can I help you with HR today?`,
+          timestamp: new Date(),
+          confidence: 100,
+          model: 'System',
+        },
+      ]);
+      localStorage.removeItem('hrAiModel');
+    }
+  }, [user, isAuthenticated]);
+
+  // Load messages from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('chatMessages');
+    if (saved) {
+      setMessages(JSON.parse(saved));
+    }
+  }, []);
+
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('chatMessages', JSON.stringify(messages));
+  }, [messages]);
+
   const [inputValue, setInputValue] = useState('');
-  // Add fallback for DEFAULT_PROMPT and QUICK_PROMPTS
-  const DEFAULT_PROMPT = `You are an elite HR Assistant Pro specializing in strategic human resources management. You provide expert guidance on:
-
-**CORE COMPETENCIES:**
-• Talent Acquisition & Recruitment Strategy
-• Performance Management & Development
-• Compliance & Legal HR Frameworks
-• Organizational Development & Culture
-• Employee Relations & Engagement
-• Compensation & Benefits Analysis
-
-**RESPONSE STANDARDS:**
-• Provide actionable, data-driven recommendations
-• Include relevant legal considerations and compliance notes
-• Use structured formatting with clear headings and bullet points
-• Offer multiple approaches when applicable
-• Include industry best practices and benchmarks
-• Maintain professional, authoritative tone
-
-**OUTPUT FORMAT:**
-• Executive summary for complex topics
-• Step-by-step implementation guides
-• Template suggestions with customization options
-• Risk assessments and mitigation strategies
-• ROI considerations where applicable
-
-Ensure all advice aligns with current employment law and industry standards.`;
-
+  
+  const DEFAULT_PROMPT = `You are HR Assistant Pro, a friendly and highly capable AI HR assistant. Greet users warmly, answer their HR-related questions conversationally, and use your available tools to help with candidate management, analytics, and HR operations whenever appropriate. If a user asks for candidate details, analytics, or CRUD actions, proactively use your tools to fetch or update data. If the user asks a general HR question, answer conversationally and helpfully. Always be clear, concise, and supportive. If you need more information, politely ask clarifying questions. If a tool fails, explain the issue and suggest next steps. Your goal is to make HR easy, efficient, and approachable for everyone.`;
+  
   const QUICK_PROMPTS = [
     {
-      title: "Candidate Interview Questions",
-      prompt: "Generate a comprehensive set of behavioral and technical interview questions for a Senior Software Engineer position, including evaluation criteria."
+      title: 'Interview Framework',
+      prompt: 'Design a comprehensive interview framework for evaluating senior software engineers, including technical and behavioral assessment criteria.',
+      icon: <Users className="h-3 w-3" />
     },
     {
-      title: "Job Description Template",
-      prompt: "Create a professional job description template for a Product Manager role, including responsibilities, requirements, and company culture elements."
+      title: 'Job Description',
+      prompt: 'Create a detailed job description for a Product Manager role, including requirements, responsibilities, and success metrics.',
+      icon: <Building2 className="h-3 w-3" />
     },
     {
-      title: "Performance Review Framework",
-      prompt: "Design a 360-degree performance review framework with specific metrics, competency areas, and development planning components."
+      title: 'Performance Review',
+      prompt: 'Develop a 360-degree performance review framework with clear KPIs and evaluation criteria for mid-level managers.',
+      icon: <TrendingUp className="h-3 w-3" />
     },
     {
-      title: "Onboarding Checklist",
-      prompt: "Develop a comprehensive 90-day onboarding checklist for new remote employees, including milestones and integration activities."
-    }
+      title: 'Onboarding Program',
+      prompt: 'Design a comprehensive 90-day onboarding program for remote employees, including milestones and check-in processes.',
+      icon: <Shield className="h-3 w-3" />
+    },
   ];
-  // Declare models state first
+
   const [models, setModels] = useState<any[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState('');
-  // For selectedModel, use the first model from models as default if available
-  const [selectedModel, setSelectedModel] = useState('');
-  useEffect(() => {
-    if (!selectedModel && models.length > 0) {
-      setSelectedModel(models[0].value || models[0].id || '');
-    }
-  }, [models, selectedModel]);
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('hrAiModel') || '');
   const [isLoading, setIsLoading] = useState(false);
-  const [customPrompt, setCustomPrompt] = useState(() => 
-    localStorage.getItem('hrAiPrompt') || DEFAULT_PROMPT
-  );
+  const [customPrompt, setCustomPrompt] = useState(DEFAULT_PROMPT);
   const [showConfig, setShowConfig] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(() => 
-    localStorage.getItem('soundEnabled') !== 'false'
-  );
+  const [soundEnabled, setSoundEnabled] = useState(true);
   const [chatStats, setChatStats] = useState<ChatStats>({
     totalMessages: 0,
     totalTokens: 0,
     averageResponseTime: 1.2,
-    sessionsToday: 1
+    sessionsToday: 1,
   });
-  const [responseProgress, setResponseProgress] = useState(0);
-  const [showModelError, setShowModelError] = useState(false);
 
-  // Fetch models from backend on mount
+  // Add state for model search
+  const [modelSearch, setModelSearch] = useState('');
+  const [showClearModal, setShowClearModal] = useState(false);
+  const [cancelRequested, setCancelRequested] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Add pendingMessages state:
+  const [pendingMessages, setPendingMessages] = useState<Message[]>([]);
+
+  // Persist selected model to localStorage
+  useEffect(() => {
+    if (selectedModel) {
+      localStorage.setItem('hrAiModel', selectedModel);
+    }
+  }, [selectedModel]);
+
+  // Fetch models
   useEffect(() => {
     const loadModels = async () => {
       setModelsLoading(true);
       setModelsError('');
       try {
         const data = await fetchModels();
-        // Defensive: ensure models is always an array
-        setModels(Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []));
+        setModels(Array.isArray(data) ? data : []);
       } catch (err) {
-        setModelsError('Failed to load models from OpenRouter.');
+        setModelsError('Failed to load AI models.');
+        toast({ 
+          title: 'System Error', 
+          description: 'Unable to connect to AI services.', 
+          variant: 'destructive' 
+        });
       } finally {
         setModelsLoading(false);
       }
@@ -178,829 +515,583 @@ Ensure all advice aligns with current employment law and industry standards.`;
     loadModels();
   }, []);
 
-  // Persist settings and stats
+  // Restore selected model from localStorage or default to first model after models are loaded
   useEffect(() => {
-    localStorage.setItem('hrAiModel', selectedModel);
-    localStorage.setItem('hrAiPrompt', customPrompt);
-    localStorage.setItem('hrAssistantMessages', JSON.stringify(messages));
-    localStorage.setItem('soundEnabled', soundEnabled.toString());
-    
-    setChatStats(prev => ({
-      ...prev,
-      totalMessages: messages.filter(m => m.type !== 'system').length
-    }));
-  }, [selectedModel, customPrompt, messages, soundEnabled]);
+    if (models.length > 0) {
+      const saved = localStorage.getItem('hrAiModel');
+      const found = models.find(m => m.id === saved);
+      if (found) {
+        setSelectedModel(found.id);
+      } else {
+        setSelectedModel(models[0].id);
+        localStorage.setItem('hrAiModel', models[0].id);
+      }
+    }
+  }, [models]);
 
+  // Update stats
+  useEffect(() => {
+    setChatStats((prev) => ({
+      ...prev,
+      totalMessages: messages.filter((m) => m.type !== 'system').length,
+    }));
+  }, [messages]);
+
+  // Scroll to bottom
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, isTyping]);
+  // Add a ref to track if the user is near the bottom
+  const isUserAtBottomRef = useRef(true);
 
+  // Attach a scroll event to the chat container to update isUserAtBottomRef
+  // (Assume chat container has ref chatContainerRef)
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handleScroll = () => {
+      const el = chatContainerRef.current;
+      if (!el) return;
+      // 40px threshold
+      isUserAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    };
+    const el = chatContainerRef.current;
+    if (el) el.addEventListener('scroll', handleScroll);
+    return () => {
+      if (el) el.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  // Only scroll to bottom if user is at bottom or a new user message is sent
+  const prevMessagesLength = useRef(messages.length);
+  useEffect(() => {
+    const newMessageAdded = messages.length > prevMessagesLength.current;
+    prevMessagesLength.current = messages.length;
+    if (newMessageAdded && isUserAtBottomRef.current) {
+      scrollToBottom();
+    }
+  }, [messages]);
+
+  // Notification sound
   const playNotificationSound = () => {
     if (soundEnabled) {
-      // Create a subtle notification sound
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
-      
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-      
-      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-      oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
-      
-      gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.1, audioContext.currentTime + 0.01);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-      
-      oscillator.start(audioContext.currentTime);
-      oscillator.stop(audioContext.currentTime + 0.2);
+      const audio = new Audio('/notification.mp3');
+      audio.play().catch(() => {});
     }
   };
 
-  const handleSendMessage = async (messageText?: string, imageUrl?: string) => {
-    if (modelsLoading || !models.length || !selectedModel) {
-      setShowModelError(true);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsError, setSessionsError] = useState('');
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
+  const [editingSessionName, setEditingSessionName] = useState('');
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [newChatName, setNewChatName] = useState('');
+  const [newChatRole, setNewChatRole] = useState('');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [sessionToDelete, setSessionToDelete] = useState<number | null>(null);
+  const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const stored = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    return stored === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? 'true' : 'false');
+  }, [sidebarCollapsed]);
+
+  // Fetch sessions on mount
+  useEffect(() => {
+    setSessionsLoading(true);
+    setSessionsError('');
+    getChatSessions()
+      .then(data => setSessions(Array.isArray(data) ? data : data.results || []))
+      .catch(() => setSessionsError('Failed to load chat sessions.'))
+      .finally(() => setSessionsLoading(false));
+  }, []);
+
+  // When a session is selected, load its messages
+  useEffect(() => {
+    if (activeSessionId) {
+      getChatMessages(activeSessionId).then(data => {
+        const msgs = data.results || data;
+        setMessages(msgs.map((m: any) => ({
+          id: m.id,
+          type: m.role === 'user' ? 'user' : m.role === 'assistant' ? 'bot' : 'system',
+          content: m.content,
+          timestamp: new Date(m.timestamp),
+          model: m.role === 'assistant' ? 'AI' : undefined,
+        })));
+      });
+    }
+    // eslint-disable-next-line
+  }, [activeSessionId]);
+
+  // Merge in pendingMessages after messages are fetched
+  useEffect(() => {
+    if (!activeSessionId) return;
+    setMessages(prevMessages => {
+      const backendContents = new Set(prevMessages.map((m: any) => (typeof m.content === 'string' ? m.content.trim() : '')));
+      const filteredPending = pendingMessages.filter(m => !backendContents.has((typeof m.content === 'string' ? m.content.trim() : '')));
+      return [...prevMessages, ...filteredPending];
+    });
+    // Clean up pendingMessages that are now in the backend
+    setPendingMessages(prev => {
+      const backendContents = new Set(messages.map((m: any) => (typeof m.content === 'string' ? m.content.trim() : '')));
+      return prev.filter(m => !backendContents.has((typeof m.content === 'string' ? m.content.trim() : '')));
+    });
+    // eslint-disable-next-line
+  }, [pendingMessages, activeSessionId]);
+
+  const handleSelectSession = (id: number) => {
+    setActiveSessionId(id);
+  };
+
+  const handleNewChat = async () => {
+    const session = await createChatSession({});
+    setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)]); // Move new chat to top
+    setActiveSessionId(session.id);
+    setMessages([]);
+  };
+
+  const handleRenameSession = (id: number, currentName: string) => {
+    setEditingSessionId(id);
+    setEditingSessionName(currentName || '');
+  };
+
+  const handleSaveRename = async (id: number) => {
+    // PATCH the session name
+    await updateChatSession(id, { session_name: editingSessionName });
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, session_name: editingSessionName } : s));
+    setEditingSessionId(null);
+    setEditingSessionName('');
+  };
+
+  const handleCancelRename = () => {
+    setEditingSessionId(null);
+    setEditingSessionName('');
+  };
+
+  const handleCreateChat = async () => {
+    if (!newChatName.trim()) {
+      toast({ title: 'Please enter a chat name.' });
       return;
     }
-    setShowModelError(false);
+    const session = await createChatSession({ session_name: newChatName, role: newChatRole });
+    setSessions(prev => [session, ...prev]);
+    setActiveSessionId(session.id);
+    setShowNewChatModal(false);
+  };
 
-    const content = messageText || inputValue;
-    if (!content.trim() || isLoading) return;
+  const handleDeleteSession = (id: number) => {
+    setSessionToDelete(id);
+    setShowDeleteModal(true);
+  };
 
+  const confirmDeleteSession = async () => {
+    if (sessionToDelete) {
+      await deleteChatSession(sessionToDelete);
+      setSessions(prev => prev.filter(s => s.id !== sessionToDelete));
+      if (activeSessionId === sessionToDelete) {
+        setActiveSessionId(null);
+        setMessages([]);
+      }
+      setShowDeleteModal(false);
+      setSessionToDelete(null);
+    }
+  };
+
+  const [sessionModel, setSessionModel] = useState(selectedModel);
+
+  // When a chat is selected, set sessionModel to its model
+  useEffect(() => {
+    const session = sessions.find(s => s.id === activeSessionId);
+    if (session && session.model) {
+      setSessionModel(session.model);
+    }
+  }, [activeSessionId, sessions]);
+
+  // When the model is changed in the dropdown
+  const handleModelChange = async (modelId: string) => {
+    setSessionModel(modelId);
+    if (activeSessionId) {
+      await updateChatSession(activeSessionId, { model: modelId });
+      setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, model: modelId } : s));
+    }
+  };
+
+  const handleSendMessage = async (messageText?: string) => {
+    let sessionId = activeSessionId;
+    if (!sessionId) {
+      const session = await createChatSession({});
+      setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)]);
+      setActiveSessionId(session.id);
+      sessionId = session.id;
+    }
+    const tempId = 'pending-' + Date.now();
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: tempId,
       type: 'user',
-      content,
+      content: messageText || inputValue,
       timestamp: new Date(),
-      tokens: Math.ceil(content.length / 4)
+      tokens: Math.ceil((messageText || inputValue).length / 4),
     };
-
-    setMessages(prev => [...prev, userMessage]);
+    setPendingMessages(prev => [...prev, userMessage]);
     setInputValue('');
     setIsLoading(true);
     setIsTyping(true);
-    setResponseProgress(0);
-
-    // Simulate progress
-    const progressInterval = setInterval(() => {
-      setResponseProgress(prev => Math.min(prev + Math.random() * 15, 90));
-    }, 200);
+    setCancelRequested(false);
 
     try {
-      // Build messages array for OpenAI/ChatML format
-      const messagesArr = [
+      abortControllerRef.current = new AbortController();
+      // Use both confirmed and pending messages for context
+      const fullHistory = [
+        ...messages,
+        ...pendingMessages,
+        userMessage
+      ].filter(m => m.type === 'user' || m.type === 'bot');
+      const history = fullHistory.map((m) => ({
+        role: m.type === 'user' ? 'user' : 'assistant',
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+      }));
+      const mcpMessages = [
         { role: 'system', content: customPrompt },
-        {
-          role: 'user',
-          content: imageUrl
-            ? [
-                { type: 'text', text: content },
-                { type: 'image_url', image_url: { url: imageUrl } }
-              ]
-            : content
-        }
+        ...history,
       ];
-      // Call backend API with full payload
-      const response = await sendChatMessage({
-        model: selectedModel,
-        messages: messagesArr,
-        prompt: customPrompt
-      });
-      clearInterval(progressInterval);
-      setResponseProgress(100);
+      const modelToUse = sessionModel || selectedModel;
+      const response = await sendMessage({
+        model: modelToUse,
+        messages: mcpMessages,
+        prompt: customPrompt,
+      }, undefined, undefined, { signal: abortControllerRef.current.signal });
       setIsTyping(false);
-
-      const modelData = getModelData(selectedModel);
-      const color = modelData.color || 'gray';
-      const badge = modelData.badge || '';
-      const icon = modelData.icon || null;
-      const label = modelData.label || '';
-      const description = modelData.description || '';
-      const confidence = 85 + Math.random() * 15;
 
       const botResponse: Message = {
         id: `${Date.now()}_bot`,
         type: 'bot',
-        content: response.response || 'No response from AI.',
+        content: response.response || 'I apologize, but I was unable to generate a response. Please try rephrasing your question.',
         timestamp: new Date(),
-        model: label,
-        confidence: Math.round(confidence),
-        tokens: Math.ceil((response.response || '').length / 4)
+        model: selectedModel,
+        confidence: Math.round(85 + Math.random() * 15),
+        tokens: Math.ceil((response.response || '').length / 4),
       };
-
-      setMessages(prev => [...prev, botResponse]);
+      setMessages((prev) => [...prev, botResponse]);
       setIsLoading(false);
-      setResponseProgress(0);
       playNotificationSound();
-      setChatStats(prev => ({
+      setChatStats((prev) => ({
         ...prev,
         totalTokens: prev.totalTokens + (userMessage.tokens || 0) + (botResponse.tokens || 0),
-        averageResponseTime: 1.2 + Math.random() * 0.8
+        averageResponseTime: 1.2 + Math.random() * 0.8,
       }));
+      await createChatMessage({ session: sessionId, role: 'assistant', content: response.response || 'I apologize, but I was unable to generate a response. Please try rephrasing your question.' });
+      setPendingMessages(prev => prev.filter(m => m.id !== tempId));
     } catch (error: any) {
-      clearInterval(progressInterval);
       setIsTyping(false);
       setIsLoading(false);
-      setResponseProgress(0);
-      setMessages(prev => [
+      setPendingMessages(prev => prev.filter(m => m.id !== tempId));
+      let errorMsg = 'I encountered an error while processing your request. Please try again or contact support if the issue persists.';
+      let toastMsg = 'Failed to get a response from the AI service.';
+      const errStr = (error?.message || error?.toString() || '').toLowerCase();
+      if (errStr.includes('limit') || errStr.includes('quota') || errStr.includes('rate')) {
+        errorMsg = '⚠️ Sorry, our AI service is temporarily unavailable due to usage limits or quota. Please try again later or contact support if this issue persists.';
+        toastMsg = 'Rate limit or quota exceeded. Please try again later.';
+      } else if (errStr.includes('network')) {
+        errorMsg = '⚠️ Network error: Unable to reach the AI service. Please check your connection and try again.';
+        toastMsg = 'Network error: Unable to reach the AI service.';
+      } else if (errStr.includes('timeout')) {
+        errorMsg = '⚠️ The request to the AI service timed out. Please try again.';
+        toastMsg = 'AI service timeout. Please try again.';
+      }
+      setMessages((prev) => [
         ...prev,
         {
           id: `${Date.now()}_error`,
           type: 'error',
-          content: 'Failed to get a response from the AI assistant. Please try again.',
-          timestamp: new Date()
-        }
+          content: errorMsg,
+          timestamp: new Date(),
+        },
       ]);
-      toast({ title: 'Chat Error', description: 'Failed to get a response from the AI assistant.', variant: 'destructive' });
+      toast({ 
+        title: 'Service Error', 
+        description: toastMsg, 
+        variant: 'destructive' 
+      });
+    } finally {
+      setIsLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
-  const generateEnhancedResponse = (query: string): string => {
-    return `## Strategic Analysis: ${query.slice(0, 50)}...
-
-Thank you for your strategic HR inquiry. Based on current industry best practices and regulatory frameworks, here's my comprehensive analysis:
-
-### 🎯 **Executive Summary**
-This request aligns with modern HR excellence standards and requires a multi-faceted approach combining compliance, operational efficiency, and employee experience optimization.
-
-### 📋 **Recommended Action Plan**
-
-**Phase 1: Assessment & Planning**
-- Conduct stakeholder analysis and requirements gathering
-- Review current policies against regulatory compliance standards
-- Establish baseline metrics and success criteria
-
-**Phase 2: Implementation Strategy**
-- Develop templated frameworks with customization options
-- Create communication plan for organizational change management
-- Implement monitoring and feedback collection systems
-
-**Phase 3: Optimization & Scaling**
-- Analyze performance data and ROI metrics
-- Refine processes based on feedback and outcomes
-- Scale successful initiatives across organization
-
-### ⚖️ **Compliance Considerations**
-• Ensure alignment with current employment law requirements
-• Document all processes for audit trail compliance
-• Regular review cycles for regulatory updates
-
-### 📊 **Expected Outcomes**
-- **Efficiency Gain**: 25-40% improvement in process speed
-- **Risk Reduction**: 60% decrease in compliance issues
-- **Employee Satisfaction**: 15-20% increase in engagement scores
-
-### 🔄 **Next Steps**
-1. Schedule stakeholder alignment meeting
-2. Begin pilot program with selected department
-3. Establish measurement framework and reporting cadence
-
-*This is a demonstration response. In production, this would connect to your configured AI service to provide real-time, contextual HR guidance.*`;
+  const handleStop = () => {
+    setCancelRequested(true);
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    setIsTyping(false);
+    setIsLoading(false);
   };
 
   const handleClearChat = () => {
-    if (window.confirm('Clear all conversation history? This will start a fresh consultation session.')) {
-      const initialMessage: Message = {
-        id: '1',
-        type: 'system',
-        // Only show a short greeting, not the full prompt
-        content: `👋 Welcome! How can I help you with HR today?`,
-        timestamp: new Date(),
-        confidence: 100,
-        model: 'System'
-      };
-      setMessages([initialMessage]);
-      localStorage.removeItem('hrAssistantMessages');
+    setShowClearModal(true);
+  };
+
+  const confirmClearChat = () => {
+    setMessages([]);
+    localStorage.removeItem('chatMessages');
+    setShowClearModal(false);
       toast({ 
-        title: 'New Consultation Session', 
-        description: 'Ready for fresh strategic HR guidance' 
+        title: 'Conversation Cleared', 
+        description: 'Started a new consultation session.' 
       });
-    }
+  };
+
+  const cancelClearChat = () => {
+    setShowClearModal(false);
   };
 
   const handleCopyMessage = (content: string) => {
     navigator.clipboard.writeText(content);
-    toast({
-      title: 'Content Copied',
-      description: 'Professional HR guidance copied to clipboard',
+    toast({ 
+      title: 'Copied to Clipboard', 
+      description: 'Message content has been copied successfully.' 
     });
   };
 
   const handleExportChat = () => {
-    const chatExport = messages.map(msg => 
-      `[${msg.timestamp.toLocaleString()}] ${msg.type.toUpperCase()}: ${msg.content}`
-    ).join('\n\n');
-    
+    const chatExport = messages
+      .map((msg) => `[${format(msg.timestamp, 'MMM d, HH:mm')}] ${msg.type.toUpperCase()}: ${msg.content}`)
+      .join('\n\n');
     const blob = new Blob([chatExport], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `HR_Consultation_${new Date().toISOString().split('T')[0]}.txt`;
+    a.download = `HR_Consultation_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.txt`;
     a.click();
     URL.revokeObjectURL(url);
-    
-    toast({
-      title: 'Chat Exported',
-      description: 'Consultation history downloaded successfully'
+    toast({ 
+      title: 'Export Complete', 
+      description: 'Conversation history has been downloaded.' 
     });
   };
 
-  const formatTimestamp = (date: Date | string) => {
-    const timestamp = typeof date === 'string' ? new Date(date) : date;
-    if (timestamp instanceof Date && !isNaN(timestamp.getTime())) {
-      return timestamp.toLocaleString([], { 
-        month: 'short', 
-        day: 'numeric', 
-        hour: '2-digit', 
-        minute: '2-digit' 
-      });
-    }
-    return '';
-  };
-
-  const getModelData = (modelValue: string) => {
-    return models.find(m => m.value === modelValue) || { color: 'gray', badge: '', icon: null, label: '', description: '' };
-  };
-
-  const getConfidenceColor = (confidence?: number) => {
-    if (!confidence) return 'slate';
-    if (confidence >= 90) return 'emerald';
-    if (confidence >= 75) return 'blue';
-    if (confidence >= 60) return 'amber';
-    return 'red';
-  };
-
-  // Top-level loading and error check
-  // Remove top-level early returns for models loading/error
-  // Instead, add a warning banner and disable input/send if models are not loaded or selected
-  // Show a warning banner if models are not loaded or selected
-  if (modelsLoading || !models.length || !selectedModel) {
   return (
+    <ErrorBoundary>
       <TooltipProvider>
-        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/30 dark:from-slate-900 dark:via-slate-800 dark:to-blue-900/10">
-          <div className="container mx-auto px-4 py-6 max-w-7xl">
-            <div className="professional-card h-[calc(100vh-3rem)] flex flex-col overflow-hidden animate-fade-in">
-              
-              {/* Premium Header */}
-              <CardHeader className="border-b gradient-bg p-6 relative overflow-hidden">
-                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 to-purple-500/5" />
-                <div className="relative z-10 flex items-center justify-between">
-                  <div className="flex items-center space-x-4">
-                    <div className="relative">
-                      <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-blue-600 via-blue-500 to-indigo-600 flex items-center justify-center shadow-xl shadow-blue-500/25">
-                        <Bot className="h-7 w-7 text-white" />
-                      </div>
-                      <div className="status-online absolute -bottom-1 -right-1" />
-                    </div>
-                    <div>
-                      <h1 className="text-2xl font-bold text-display bg-gradient-to-r from-slate-900 to-slate-700 dark:from-white dark:to-slate-300 bg-clip-text text-transparent">
-                        HR Assistant Pro
-                      </h1>
-                      <div className="flex items-center space-x-3 mt-2">
-                        <Badge variant="secondary" className="text-xs font-medium">
-                          <Sparkles className="h-3 w-3 mr-1" />
-                          AI-Powered Enterprise
-                        </Badge>
-                        <Badge variant="outline" className={`text-xs font-medium border-${getModelData(selectedModel).color}-200 text-${getModelData(selectedModel).color}-700`}>
-                          {typeof getModelData(selectedModel).icon === 'function' ? React.createElement(getModelData(selectedModel).icon, { className: "h-3 w-3 mr-1" }) : null}
-                          {getModelData(selectedModel).badge}
-                        </Badge>
-                        <Badge variant="outline" className="text-xs">
-                          <TrendingUp className="h-3 w-3 mr-1" />
-                          {chatStats.totalMessages} queries
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="flex items-center space-x-3">
-                    <div className="hidden md:flex items-center space-x-4 text-sm text-muted-foreground">
-                      <div className="flex items-center space-x-1">
-                        <MessageSquare className="h-4 w-4" />
-                        <span>{chatStats.totalMessages}</span>
-                      </div>
-                      <div className="flex items-center space-x-1">
-                        <Clock className="h-4 w-4" />
-                        <span>{chatStats.averageResponseTime}s avg</span>
-                      </div>
-                    </div>
-                    
-                    <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                      <AvatarImage src="/api/placeholder/40/40" />
-                      <AvatarFallback className="text-sm font-semibold bg-gradient-to-br from-slate-100 to-slate-200">HR</AvatarFallback>
-                    </Avatar>
-                    
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-10 w-10 professional-button">
-                          <MoreVertical className="h-5 w-5" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-56">
-                        <DropdownMenuItem onClick={() => setShowConfig(true)}>
-                          <Settings className="h-4 w-4 mr-2" />
-                          Configuration
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={handleExportChat}>
-                          <Download className="h-4 w-4 mr-2" />
-                          Export Consultation
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={handleClearChat}>
-                          <Eraser className="h-4 w-4 mr-2" />
-                          New Session
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
+        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/30 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950/10 flex flex-col">
+          {/* Status Banner */}
+          {(modelsLoading || modelsError || models.length === 0) && (
+            <div className="bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20 text-amber-800 dark:text-amber-200 p-4 text-sm border-b border-amber-200 dark:border-amber-800">
+              <div className="max-w-4xl mx-auto flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 bg-amber-500 rounded-full animate-pulse"></div>
+                  {modelsLoading ? 'Initializing AI systems...' : modelsError || 'System configuration required'}
                 </div>
-                
-                {/* Progress Bar for Loading */}
-                {isLoading && (
-                  <div className="absolute bottom-0 left-0 right-0">
-                    <Progress value={responseProgress} className="h-1" />
-                  </div>
-                )}
-              </CardHeader>
-
-              {/* Enhanced Messages Area */}
-              <CardContent className="flex-1 overflow-y-auto p-0 scroll-professional">
-                <div className="p-6 space-y-8">
-                  {messages.map((message, index) => (
-                    <div
-                      key={message.id}
-                      className={`flex gap-4 group chat-message animate-fade-in ${
-                        message.type === 'user' ? 'justify-end' : 'justify-start'
-                      }`}
-                      style={{ animationDelay: `${index * 0.1}s` }}
-                    >
-                      {message.type !== 'user' && (
-                        <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                          <div className="h-full w-full bg-[#16B97F] flex items-center justify-center">
-                            <Bot className="h-5 w-5 text-white" />
-                          </div>
-                        </Avatar>
-                      )}
-                      
-                      <div className={`max-w-[85%] relative ${
-                        message.type === 'user'
-                          ? 'message-user bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-md hover:shadow-lg transition-shadow duration-200'
-                          : 'message-bot bg-white dark:bg-slate-900 border-l-4 border-[#16B97F] border border-[#16B97F] shadow-md hover:shadow-lg transition-shadow duration-200'
-                      } p-6 group-hover:shadow-lg transition-all duration-300`}>
-                        
-                        <div className={`prose prose-sm max-w-none ${message.type === 'user' ? 'text-slate-800 dark:text-slate-100' : 'text-blue-900 dark:text-blue-100'}`}>
-                          <ReactMarkdown rehypePlugins={[rehypeRaw]} remarkPlugins={[remarkGfm]}>
-                            {message.content}
-                          </ReactMarkdown>
-                        </div>
-                        
-                      </div>
-                      
-                      {message.type === 'user' && (
-                        <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                          <div className="h-full w-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center">
-                            <User className="h-5 w-5 text-slate-600 dark:text-slate-200" />
-                          </div>
-                        </Avatar>
-                      )}
-                    </div>
-                  ))}
-                  
-                  {/* Enhanced Typing Indicator */}
-                  {isTyping && (
-                    <div className="flex gap-4 animate-fade-in">
-                      <div className="flex-shrink-0 mt-1">
-                        <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                          <div className="h-full w-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
-                            <Bot className="h-5 w-5 text-white" />
-                          </div>
-                        </Avatar>
-                      </div>
-                      <div className="message-bot p-6 max-w-[85%] shimmer-effect">
-                        <div className="flex items-center space-x-2">
-                          <span className="text-sm text-muted-foreground">Analyzing your request</span>
-                          <div className="typing-indicator">
-                            <div className="typing-dot" />
-                            <div className="typing-dot" />
-                            <div className="typing-dot" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  
-                  <div ref={messagesEndRef} />
-                </div>
-              </CardContent>
-
-              {/* Enhanced Input Area */}
-              <div className="border-t gradient-bg p-6">
-                {/* Quick Actions */}
-                <div className="mb-4">
-                  <div className="flex flex-wrap gap-2">
-                    {QUICK_PROMPTS.map((prompt, index) => (
-                      <Button
-                        key={index}
-                        variant="outline"
-                        size="sm"
-                        className="text-xs professional-button"
-                        onClick={() => handleSendMessage(prompt.prompt)}
-                        disabled={isLoading}
-                      >
-                        {prompt.title}
-                      </Button>
-                    ))}
-                  </div>
-        </div>
-                
-                <div className="flex items-end space-x-3">
-                  <div className="flex-1 relative">
-                    <Input
-                      value={inputValue}
-                      onChange={(e) => setInputValue(e.target.value)}
-                      placeholder="Ask about strategic HR initiatives, compliance frameworks, or talent optimization..."
-                      className="min-h-[52px] pr-12 rounded-2xl input-professional text-professional resize-none border-border/50 focus:border-primary/50 shadow-sm"
-                      onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && !isLoading && handleSendMessage()}
-                      disabled={isLoading || modelsLoading || !models.length || !selectedModel}
-                    />
-        </div>
-                  <Button
-                    onClick={() => handleSendMessage()}
-                    disabled={!inputValue.trim() || isLoading || modelsLoading || !models.length || !selectedModel}
-                    className="h-[52px] w-[52px] rounded-2xl bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 professional-button shadow-lg"
-                  >
-                    {isLoading ? (
-                      <RefreshCw className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <Send className="h-5 w-5" />
-                    )}
-        </Button>
-                </div>
-                
-                <div className="flex items-center justify-between mt-4 text-xs text-muted-foreground">
-                  <div className="flex items-center space-x-4">
-                    <span>Press Enter to send • Shift+Enter for new line</span>
-                    <div className="flex items-center space-x-2">
-                      <span>Sound:</span>
-                      <Switch
-                        checked={soundEnabled}
-                        onCheckedChange={setSoundEnabled}
-                        className="scale-75"
-                      />
-                      {soundEnabled ? <Volume2 className="h-3 w-3" /> : <VolumeX className="h-3 w-3" />}
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <Shield className="h-3 w-3" />
-                    <span>Enterprise-grade security & compliance</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Enhanced Settings Dialog */}
-        <Dialog open={showConfig} onOpenChange={setShowConfig}>
-              <DialogContent className="sm:max-w-[700px] max-h-[80vh] overflow-y-auto">
-            <DialogHeader>
-                  <DialogTitle className="flex items-center space-x-2 text-xl">
-                    <Settings className="h-6 w-6" />
-                    <span>Professional Configuration</span>
-                  </DialogTitle>
-              <DialogDescription>
-                    Configure your AI assistant for optimal HR consultation performance and compliance.
-              </DialogDescription>
-            </DialogHeader>
-                
-                <div className="space-y-8 py-6">
-                  <div className="space-y-4">
-                    <Label className="text-base font-semibold">AI Model Selection</Label>
-                    <Select
-                      value={selectedModel}
-                      onValueChange={setSelectedModel}
-                    >
-                      <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select AI model" />
-                  </SelectTrigger>
-                      <SelectContent style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                        {modelsLoading ? (
-                          <div className="p-4 text-center text-muted-foreground">Loading models...</div>
-                        ) : modelsError ? (
-                          <div className="p-4 text-center text-red-500">{modelsError}</div>
-                        ) : (
-                          models.map((model) => (
-                            <SelectItem key={model.value || model.id || model.name} value={model.value || model.id || model.name}>
-                              <div className="flex items-center justify-between w-full">
-                                <div className="flex items-center space-x-2">
-                                  {/* Optionally use an icon if available */}
-                                  <span>{model.label || model.id || model.name}</span>
-                                </div>
-                                {model.badge && <Badge variant="outline" className="ml-2 text-xs">{model.badge}</Badge>}
-                              </div>
-                      </SelectItem>
-                          ))
-                        )}
-                  </SelectContent>
-                </Select>
-                    <p className="text-sm text-muted-foreground">
-                      {getModelData(selectedModel).description}
-                    </p>
-              </div>
-                  
-                  <Separator />
-                  
-                  <div className="space-y-4">
-                    <Label className="text-base font-semibold">Professional Instructions</Label>
-                <Textarea
-                  value={customPrompt}
-                  onChange={(e) => setCustomPrompt(e.target.value)}
-                      className="min-h-[250px] text-sm font-mono"
-                      placeholder="Define your AI assistant's expertise and behavior patterns..."
-                    />
-                    <div className="flex items-center justify-between text-sm text-muted-foreground">
-                      <span>Comprehensive instructions ensure optimal professional guidance.</span>
-                      <span>{customPrompt.length} characters</span>
-                    </div>
-                  </div>
-                  
-                  <Separator />
-                  
-                  <div className="grid grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <Label className="text-sm font-medium">Session Statistics</Label>
-                      <div className="space-y-2 text-sm">
-                        <div className="flex justify-between">
-                          <span>Total Messages:</span>
-                          <span className="font-mono">{chatStats.totalMessages}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Total Tokens:</span>
-                          <span className="font-mono">{chatStats.totalTokens.toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Avg Response Time:</span>
-                          <span className="font-mono">{chatStats.averageResponseTime}s</span>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <Label className="text-sm font-medium">Preferences</Label>
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm">Sound Notifications</span>
-                          <Switch
-                            checked={soundEnabled}
-                            onCheckedChange={setSoundEnabled}
-                          />
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm">Auto-scroll Messages</span>
-                          <Switch checked={true} disabled />
-                        </div>
-                      </div>
-                    </div>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
-          </div>
-        </div>
-      </TooltipProvider>
-    );
-  }
-
-  // Use safe modelData everywhere in JSX
-  const modelData = getModelData(selectedModel);
-  const color = modelData.color || 'gray';
-  const badge = modelData.badge || '';
-  const icon = modelData.icon || null;
-  const label = modelData.label || '';
-  const description = modelData.description || '';
-
-  // Restore the three-dot (More/Settings) menu in the chat header
-  return (
-    <TooltipProvider>
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/30 dark:from-slate-900 dark:via-slate-800 dark:to-blue-900/10 flex flex-col items-stretch">
-        <div className="w-full flex flex-col flex-1">
-          {/* Feature-rich Header with More/Settings menu */}
-          <div className="flex items-center justify-between py-4 px-4 bg-white dark:bg-slate-900 shadow-md border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
-            <div className="flex items-center gap-3">
-              <Badge variant="outline" className="h-10 flex items-center justify-center px-4 text-lg font-semibold border-blue-400 text-blue-700 bg-blue-50 dark:bg-blue-900 dark:text-blue-200 shadow-md">
-                {label || 'Model'}
-              </Badge>
-            </div>
-            <div className="flex items-center gap-4 text-sm text-muted-foreground">
-              <div className="flex items-center gap-1">
-                <MessageSquare className="h-4 w-4" />
-                <span>{chatStats.totalMessages}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <Clock className="h-4 w-4" />
-                <span>{chatStats.averageResponseTime}s avg</span>
-              </div>
-              <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                <AvatarImage src="/api/placeholder/40/40" />
-                <AvatarFallback className="text-sm font-semibold bg-gradient-to-br from-slate-100 to-slate-200">HR</AvatarFallback>
-              </Avatar>
-              {/* Three-dot More/Settings menu */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-10 w-10">
-                    <MoreVertical className="h-5 w-5" />
+                {modelsError && (
+                  <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+                    Retry Connection
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuItem onClick={() => setShowConfig(true)}>
-                    <Settings className="h-4 w-4 mr-2" />
-                    Configuration
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleExportChat}>
-                    <Download className="h-4 w-4 mr-2" />
-                    Export Consultation
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleClearChat}>
-                    <Eraser className="h-4 w-4 mr-2" />
-                    New Session
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                )}
+              </div>
             </div>
-          </div>
-          {/* Chat Area with Input Inside */}
-          <div className="flex-1 flex flex-col bg-white dark:bg-slate-900 shadow-md overflow-hidden">
-            <div className="flex-1 overflow-y-auto px-2 sm:px-6 py-6 space-y-6" style={{scrollBehavior: 'smooth'}}>
-              {messages.map((message, index) => (
-                <div
-                  key={message.id}
-                  className={`flex gap-4 group chat-message animate-fade-in ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
-                  style={{ animationDelay: `${index * 0.1}s` }}
-                >
-                  {message.type !== 'user' && (
-                    <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                      <div className={`h-full w-full ${message.type === 'system' ? 'bg-gradient-to-br from-emerald-500 to-emerald-600' : 'bg-gradient-to-br from-blue-500 to-blue-600'} flex items-center justify-center`}>
-                        <Bot className="h-5 w-5 text-white" />
-                      </div>
-                    </Avatar>
-                  )}
-                  <div className={`max-w-[85%] relative ${message.type === 'user' ? 'message-user' : message.type === 'error' ? 'message-error' : message.type === 'system' ? 'message-bot border-emerald-200 dark:border-emerald-800' : 'message-bot'} p-6 group-hover:shadow-lg transition-all duration-300`}>
-                    <div className={`prose prose-sm max-w-none text-professional ${message.type === 'user' ? 'prose-invert' : 'dark:prose-invert'}`}>
-                      <ReactMarkdown rehypePlugins={[rehypeRaw]} remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                    </div>
-                  </div>
-                  {message.type === 'user' && (
-                    <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                      <div className="h-full w-full bg-gradient-to-br from-slate-600 to-slate-700 flex items-center justify-center">
-                        <User className="h-5 w-5 text-white" />
-                      </div>
-                    </Avatar>
-                  )}
-                </div>
-              ))}
-              {isTyping && (
-                <div className="flex gap-4 animate-fade-in">
-                  <div className="flex-shrink-0 mt-1">
-                    <Avatar className="h-10 w-10 border-2 border-white shadow-lg">
-                      <div className="h-full w-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
-                        <Bot className="h-5 w-5 text-white" />
-                      </div>
-                    </Avatar>
-                  </div>
-                  <div className="message-bot p-6 max-w-[85%] shimmer-effect">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-sm text-muted-foreground">Analyzing your request</span>
-                      <div className="typing-indicator">
-                        <div className="typing-dot" />
-                        <div className="typing-dot" />
-                        <div className="typing-dot" />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+          )}
+
+          <ChatHeader
+            selectedModel={selectedModel}
+            models={models}
+            chatStats={chatStats}
+            onOpenConfig={() => setShowConfig(true)}
+            onExportChat={handleExportChat}
+            onClearChat={handleClearChat}
+            sessionModel={sessionModel}
+            onModelChange={handleModelChange}
+            availableModels={models}
+          />
+
+          <div className="flex h-screen">
+            <ChatSidebar
+              sessions={sessions} // sessions already sorted with newest on top
+              activeSessionId={activeSessionId}
+              onSelect={handleSelectSession}
+              onRename={handleRenameSession}
+              onDelete={handleDeleteSession}
+              editingSessionId={editingSessionId}
+              editingSessionName={editingSessionName}
+              setEditingSessionName={setEditingSessionName}
+              onSaveRename={id => handleRenameSession(id, editingSessionName)}
+              onCancelRename={handleCancelRename}
+              menuOpenId={menuOpenId}
+              setMenuOpenId={setMenuOpenId}
+              onNewChat={handleNewChat}
+              collapsed={sidebarCollapsed}
+              onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
+            />
+            {!sidebarOpen && (
+              <button
+                className="fixed top-4 left-2 z-50 bg-slate-900 text-white rounded-full p-2 shadow hover:bg-slate-800 transition"
+                onClick={() => setSidebarOpen(true)}
+                title="Show sidebar"
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
+            )}
+          <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full">
+            <div ref={chatContainerRef} className="flex-1 overflow-y-auto py-6 space-y-6">
+              <AnimatePresence mode="popLayout">
+                {messages.map((message) => (
+                  <ChatMessage key={message.id} message={message} onCopy={handleCopyMessage} />
+                ))}
+                {isTyping && <TypingIndicator />}
+              </AnimatePresence>
               <div ref={messagesEndRef} />
             </div>
-            {/* Quick Prompts as Chips */}
-            <div className="flex flex-wrap gap-2 px-4 pb-2">
-              {QUICK_PROMPTS.map((prompt, index) => (
-                <Button
-                  key={index}
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full px-4 py-1 text-xs border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700"
-                  onClick={() => handleSendMessage(prompt.prompt)}
-                  disabled={isLoading}
-                >
-                  {prompt.title}
-                </Button>
-              ))}
-            </div>
-            {/* Input Bar inside chat container */}
-            <div className="w-full px-2 py-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-end gap-2">
-              <Input
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                placeholder="Ask about strategic HR initiatives, compliance frameworks, or talent optimization..."
-                className="flex-1 min-h-[44px] rounded-2xl border border-blue-200 focus:border-blue-500 shadow-sm text-base"
-                onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && !isLoading && handleSendMessage()}
-                disabled={isLoading || modelsLoading || !models.length || !selectedModel}
-              />
-              <Button
-                onClick={() => handleSendMessage()}
-                disabled={!inputValue.trim() || isLoading || modelsLoading || !models.length || !selectedModel}
-                className="h-11 w-11 rounded-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 shadow-lg flex items-center justify-center"
-              >
-                {isLoading ? (
-                  <RefreshCw className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Send className="h-5 w-5" />
-                )}
-              </Button>
+
+            <InputBar
+              value={inputValue}
+              onChange={setInputValue}
+              onSend={() => handleSendMessage()}
+              isLoading={isLoading}
+              disabled={modelsLoading || !selectedModel}
+              onNewChat={handleNewChat}
+              selectedModel={selectedModel}
+              availableModels={models}
+              onModelChange={handleModelChange}
+            />
             </div>
           </div>
+
+          {/* Configuration Dialog */}
+          <Dialog open={showConfig} onOpenChange={setShowConfig}>
+            <DialogContent className="sm:max-w-[650px]">
+              <DialogHeader>
+                <DialogTitle>HR Assistant Configuration</DialogTitle>
+                <DialogDescription>
+                  Customize your AI assistant's behavior and preferences.
+                </DialogDescription>
+              </DialogHeader>
+              
+              <div className="grid gap-6 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="model-select">AI Model Selection</Label>
+                  <input
+                    type="text"
+                    placeholder="Search models..."
+                    className="w-full px-3 py-2 mb-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={modelSearch}
+                    onChange={e => setModelSearch(e.target.value)}
+                    disabled={modelsLoading}
+                  />
+                  <Select
+                    value={selectedModel}
+                    onValueChange={setSelectedModel}
+                    disabled={modelsLoading}
+                  >
+                    <SelectTrigger id="model-select" tabIndex={0} aria-label="AI Model Selection">
+                      <SelectValue placeholder={models.find(m => m.id === selectedModel)?.label || 'Select AI model'} />
+                    </SelectTrigger>
+                    <SelectContent style={{ maxHeight: 240, overflowY: 'auto' }}>
+                      {models
+                        .filter(model =>
+                          (model.label || model.id)
+                            .toLowerCase()
+                            .includes(modelSearch.toLowerCase())
+                        )
+                        .map((model) => (
+                          <SelectItem key={model.id} value={model.id}>
+                            {model.label || model.id} {model.badge ? `(${model.badge})` : ''}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  <div className="text-xs text-muted-foreground mt-1">Use ↑ ↓ to scroll, type to search, Enter to select, Esc to close.</div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>System Prompt</Label>
+                  <Textarea
+                    value={customPrompt}
+                    onChange={(e) => setCustomPrompt(e.target.value)}
+                    className="min-h-[120px]"
+                    placeholder="Enter custom instructions for the AI..."
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-2">
+                  <div className="flex items-center gap-3">
+                    <Switch 
+                      id="sound-toggle" 
+                      checked={soundEnabled} 
+                      onCheckedChange={setSoundEnabled} 
+                    />
+                    <Label htmlFor="sound-toggle">Notification Sounds</Label>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    onClick={() => setCustomPrompt(DEFAULT_PROMPT)}
+                  >
+                    Reset Defaults
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Clear Chat Confirmation Modal */}
+          <Dialog open={showClearModal} onOpenChange={setShowClearModal}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Clear Conversation</DialogTitle>
+                <DialogDescription>
+                  Are you sure you want to clear the entire conversation history? This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <div>Are you sure you want to clear the entire conversation history? This action cannot be undone.</div>
+              <DialogFooter>
+                <Button variant="outline" onClick={cancelClearChat}>Cancel</Button>
+                <Button variant="destructive" onClick={confirmClearChat}>Clear Chat</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={showNewChatModal} onOpenChange={setShowNewChatModal}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>New Chat</DialogTitle>
+                <DialogDescription>
+                  Create a new chat session with a name and role.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <Label>Chat Name</Label>
+                <Textarea value={newChatName} onChange={e => setNewChatName(e.target.value)} placeholder="e.g. HR Policy Discussion" />
+                <Label>Role (optional)</Label>
+                <Textarea value={newChatRole} onChange={e => setNewChatRole(e.target.value)} placeholder="e.g. HR, Admin, Manager" />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowNewChatModal(false)}>Cancel</Button>
+                <Button onClick={handleCreateChat} disabled={!newChatName.trim()}>Create</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={showDeleteModal} onOpenChange={setShowDeleteModal}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Delete Chat</DialogTitle>
+                <DialogDescription>
+                  Are you sure you want to delete this chat session? This cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <div>Are you sure you want to delete this chat session? This cannot be undone.</div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowDeleteModal(false)}>Cancel</Button>
+                <Button variant="destructive" onClick={confirmDeleteSession}>Delete</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
-      </div>
-      {/* Configuration Dialog */}
-      <Dialog open={showConfig} onOpenChange={setShowConfig}>
-        <DialogContent className="sm:max-w-[700px] max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center space-x-2 text-xl">
-              <Settings className="h-6 w-6" />
-              <span>Professional Configuration</span>
-            </DialogTitle>
-            <DialogDescription>
-              Configure your AI assistant for optimal HR consultation performance and compliance.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-8 py-6">
-            <div className="space-y-4">
-              <Label className="text-base font-semibold">AI Model Selection</Label>
-              <Select value={selectedModel} onValueChange={setSelectedModel}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select AI model" />
-                </SelectTrigger>
-                <SelectContent style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                  {modelsLoading ? (
-                    <div className="p-4 text-center text-muted-foreground">Loading models...</div>
-                  ) : modelsError ? (
-                    <div className="p-4 text-center text-red-500">{modelsError}</div>
-                  ) : (
-                    models.map((model) => (
-                      <SelectItem key={model.value || model.id || model.name} value={model.value || model.id || model.name}>
-                        <div className="flex items-center justify-between w-full">
-                          <div className="flex items-center space-x-2">
-                            <span>{model.label || model.id || model.name}</span>
-                          </div>
-                          {model.badge && <Badge variant="outline" className="ml-2 text-xs">{model.badge}</Badge>}
-                        </div>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-              <p className="text-sm text-muted-foreground">{getModelData(selectedModel).description}</p>
-            </div>
-            <Separator />
-            <div className="grid grid-cols-2 gap-6">
-              <div className="space-y-2">
-                <Label className="text-sm font-medium">Session Statistics</Label>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span>Total Messages:</span>
-                    <span className="font-mono">{chatStats.totalMessages}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Total Tokens:</span>
-                    <span className="font-mono">{chatStats.totalTokens.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Avg Response Time:</span>
-                    <span className="font-mono">{chatStats.averageResponseTime}s</span>
-                  </div>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label className="text-sm font-medium">Preferences</Label>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm">Sound Notifications</span>
-                    <Switch checked={soundEnabled} onCheckedChange={setSoundEnabled} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm">Auto-scroll Messages</span>
-                    <Switch checked={true} disabled />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </TooltipProvider>
+      </TooltipProvider>
+    </ErrorBoundary>
   );
 };
 

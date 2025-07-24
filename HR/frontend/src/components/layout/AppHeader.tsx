@@ -161,8 +161,10 @@ export const AppHeader: React.FC = () => {
     <header className="sticky top-0 z-50 bg-white dark:bg-gray-900 shadow-sm border-b border-gray-200 dark:border-gray-800 backdrop-blur-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0 px-4 sm:px-6 md:px-8 py-3 sm:py-4 font-sans transition-all duration-300">
       <div className="flex items-center gap-4">
         <SidebarTrigger className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-200">
-          <svg className="h-5 w-5 text-gray-600 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
+          {/* Custom sidebar/layout icon as per user screenshot */}
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-gray-600 dark:text-gray-300">
+            <rect x="3" y="4" width="18" height="16" rx="2" ry="2" />
+            <line x1="9" y1="4" x2="9" y2="20" />
           </svg>
         </SidebarTrigger>
         <div className="flex flex-col gap-1">

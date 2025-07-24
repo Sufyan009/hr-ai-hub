@@ -409,7 +409,7 @@ const AddCandidate: React.FC = () => {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="skills" className="text-sm font-medium text-gray-700 dark:text-gray-200">
-                  Key Skills <span className="text-red-500">*</span>
+                  Communication Skills <span className="text-red-500">*</span>
                 </Label>
                 <Select value={communicationSkills} onValueChange={setCommunicationSkills}>
                   <SelectTrigger className="rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 focus:ring-2 focus:ring-blue-500">

@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'accounts',
     'corsheaders',
     'django_extensions',
+    'mcphub',
 ]
 
 MIDDLEWARE = [

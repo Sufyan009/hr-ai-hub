@@ -349,7 +349,7 @@ const EditCandidate: React.FC = () => {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="skills">Key Skills</Label>
+                <Label htmlFor="skills">Communication Skills</Label>
                 <Select value={communicationSkills} onValueChange={setCommunicationSkills}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select communication skill" />
