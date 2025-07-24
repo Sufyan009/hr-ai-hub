@@ -42,6 +42,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useDebounce } from '@/hooks/useDebounce';
+import { DeleteConfirmationModal } from '@/components/DeleteConfirmationModal';
 
 interface Candidate {
   id: number;
@@ -92,6 +93,8 @@ const CandidateList: React.FC = () => {
     candidate_stage: '',
   });
   const [filtersLoading, setFiltersLoading] = useState(true);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [candidateToDelete, setCandidateToDelete] = useState<Candidate | null>(null);
 
   const handlePendingFilterChange = (field: string, value: string) => {
     setPendingFilters(prev => ({ ...prev, [field]: value }));
@@ -221,7 +224,6 @@ const CandidateList: React.FC = () => {
   };
 
   const handleDelete = async (id: number) => {
-    if (!window.confirm('Are you sure you want to delete this candidate?')) return;
     setDeletingId(id);
     try {
       await api.delete(`/candidates/${id}/`);
@@ -232,6 +234,8 @@ const CandidateList: React.FC = () => {
       toast({ title: 'Error', description: 'Failed to delete candidate.', variant: 'destructive' });
     } finally {
       setDeletingId(null);
+      setShowDeleteModal(false);
+      setCandidateToDelete(null);
     }
   };
 
@@ -569,7 +573,7 @@ const CandidateList: React.FC = () => {
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                          onClick={() => handleDelete(candidate.id)}
+                          onClick={() => { setCandidateToDelete(candidate); setShowDeleteModal(true); }}
                                   className="hover:bg-red-100 dark:hover:bg-red-900"
                           disabled={deletingId === candidate.id}
                         >
@@ -624,6 +628,15 @@ const CandidateList: React.FC = () => {
       </div>
         </CardContent>
       </Card>
+      {showDeleteModal && candidateToDelete && (
+  <DeleteConfirmationModal
+    open={showDeleteModal}
+    onOpenChange={setShowDeleteModal}
+    onConfirm={() => handleDelete(candidateToDelete.id)}
+    jobTitle={`${candidateToDelete.first_name} ${candidateToDelete.last_name}`}
+    isDeleting={deletingId === candidateToDelete.id}
+  />
+)}
     </div>
   );
 };

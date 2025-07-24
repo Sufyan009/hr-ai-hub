@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 
 class User(AbstractUser):
     ROLE_CHOICES = (
@@ -29,6 +30,7 @@ class Candidate(models.Model):
     city = models.ForeignKey('City', on_delete=models.SET_NULL, null=True, blank=True)
     source = models.ForeignKey('Source', on_delete=models.SET_NULL, null=True, blank=True)
     notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(default=timezone.now)
 
     def save(self, *args, **kwargs):
         if self.first_name:
@@ -103,3 +105,32 @@ class JobPost(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.get_status_display()})" 
+
+class ChatSession(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='chat_sessions')
+    session_name = models.CharField(max_length=100, blank=True, null=True)  # Optional, for user to name sessions
+    role = models.CharField(max_length=50, blank=True, null=True)  # e.g., 'admin', 'hr', 'manager', etc.
+    model = models.CharField(max_length=100, blank=True, null=True)  # Selected AI model for this session
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    # Optionally: is_active, etc.
+
+    def __str__(self):
+        return f"Session {self.id} for {self.user} ({self.role or 'no role'})"
+
+class ChatMessage(models.Model):
+    session = models.ForeignKey(ChatSession, on_delete=models.CASCADE, related_name='messages')
+    role = models.CharField(max_length=20)  # 'user', 'assistant', 'system'
+    content = models.TextField()
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.role} @ {self.timestamp}: {self.content[:30]}..." 
+
+class Note(models.Model):
+    candidate = models.ForeignKey('Candidate', on_delete=models.CASCADE, related_name='notes_set')
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Note for {self.candidate} at {self.created_at:%Y-%m-%d %H:%M}: {self.content[:30]}..." 

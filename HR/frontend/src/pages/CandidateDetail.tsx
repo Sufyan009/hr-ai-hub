@@ -29,6 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import api from '@/services/api';
+import { DeleteConfirmationModal } from '@/components/DeleteConfirmationModal';
 
 const CandidateDetail: React.FC = () => {
   const { id } = useParams();
@@ -44,6 +45,28 @@ const CandidateDetail: React.FC = () => {
   const [interviewTime, setInterviewTime] = useState('');
   const [note, setNote] = useState('');
   const [newStage, setNewStage] = useState(candidate?.candidate_stage || '');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [notes, setNotes] = useState<any[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+
+  // Fetch notes for candidate
+  const fetchNotes = async () => {
+    setNotesLoading(true);
+    try {
+      const res = await api.get(`/notes/?candidate=${id}`);
+      // Accept both array and paginated response
+      const notesArr = Array.isArray(res.data)
+        ? res.data
+        : Array.isArray(res.data.results)
+          ? res.data.results
+          : [];
+      setNotes(notesArr);
+    } catch (err) {
+      setNotes([]);
+    } finally {
+      setNotesLoading(false);
+    }
+  };
 
   useEffect(() => {
     const fetchCandidate = async () => {
@@ -59,6 +82,7 @@ const CandidateDetail: React.FC = () => {
       }
     };
     fetchCandidate();
+    fetchNotes();
   }, [id]);
 
   const getStageInfo = (stage: string) => {
@@ -75,6 +99,7 @@ const CandidateDetail: React.FC = () => {
   };
 
   const handleDelete = async () => {
+    setShowDeleteModal(false);
     if (!window.confirm('Are you sure you want to delete this candidate? This action cannot be undone.')) {
       return;
     }
@@ -88,16 +113,40 @@ const CandidateDetail: React.FC = () => {
   const handleScheduleInterview = () => setShowInterviewModal(true);
   const saveInterview = () => {
     setShowInterviewModal(false);
-    toast({ title: 'Interview Scheduled', description: `Interview scheduled for ${interviewDate} at ${interviewTime}` });
+    toast({ title: 'Not Implemented', description: 'Interview scheduling is not yet implemented in the backend.' });
     setInterviewDate('');
     setInterviewTime('');
   };
 
   const handleAddNote = () => setShowNoteModal(true);
-  const saveNote = () => {
-    setShowNoteModal(false);
-    toast({ title: 'Note Added', description: note });
-    setNote('');
+  // Add note
+  const saveNote = async () => {
+    setLoading(true);
+    try {
+      await api.post('/notes/', { candidate: id, content: note });
+      setNote('');
+      setShowNoteModal(false);
+      toast({ title: 'Note Added', description: 'Your note has been saved.' });
+      fetchNotes();
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to save note.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete note
+  const deleteNote = async (noteId: number) => {
+    setLoading(true);
+    try {
+      await api.delete(`/notes/${noteId}/`);
+      toast({ title: 'Note Deleted', description: 'The note has been deleted.' });
+      fetchNotes();
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to delete note.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSendEmail = () => {
@@ -109,16 +158,26 @@ const CandidateDetail: React.FC = () => {
   };
 
   const handleUpdateStage = () => setShowStageModal(true);
-  const saveStage = () => {
-    toast({ title: 'Stage Updated', description: `Candidate stage updated to ${newStage}` });
-    setShowStageModal(false);
+  const saveStage = async () => {
+    if (!newStage) return;
+    setLoading(true);
+    try {
+      await api.patch(`/candidates/${id}/`, { candidate_stage: newStage });
+      toast({ title: 'Stage Updated', description: `Candidate stage updated to ${newStage}` });
+      setShowStageModal(false);
+      // Refresh candidate data
+      const res = await api.get(`/candidates/${id}/`);
+      setCandidate(res.data);
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to update stage.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  if (loading) return (
-    <div className="flex items-center justify-center min-h-screen">
-      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-    </div>
-  );
+  if (loading || !candidate) {
+    return <div className="flex items-center justify-center min-h-screen text-gray-500 dark:text-gray-400">Loading candidate...</div>;
+  }
   
   if (error) return (
     <div className="flex items-center justify-center min-h-screen">
@@ -139,6 +198,9 @@ const CandidateDetail: React.FC = () => {
 
   const fullName = `${candidate.first_name || ''} ${candidate.last_name || ''}`.trim();
   const stageInfo = getStageInfo(candidate.candidate_stage);
+
+  // Defensive fallback before rendering notes:
+  const safeNotes = Array.isArray(notes) ? notes : [];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
@@ -170,7 +232,7 @@ const CandidateDetail: React.FC = () => {
             </Button>
             <Button 
               variant="destructive" 
-              onClick={handleDelete}
+              onClick={() => setShowDeleteModal(true)}
               className="gap-2"
             >
               <Trash2 className="h-4 w-4" />
@@ -408,16 +470,39 @@ const CandidateDetail: React.FC = () => {
                     </div>
                   </TabsContent>
 
+                  {/* Notes Section */}
                   <TabsContent value="notes" className="mt-0">
-                    <div className="space-y-4">
-                      <div className="p-4 rounded-xl bg-muted/20 border-l-4 border-accent">
-                        <div className="flex items-center gap-2 mb-2">
-                          <MessageSquare className="h-4 w-4 text-accent" />
-                          <span className="font-medium text-foreground">Recruiter Notes</span>
-                        </div>
-                        <p className="text-muted-foreground leading-relaxed">{candidate.notes}</p>
-                      </div>
-                    </div>
+                    <Card className="shadow-lg border-0 bg-white dark:bg-gray-800">
+                      <CardHeader className="border-b bg-gray-50 dark:bg-gray-700">
+                        <CardTitle className="text-lg font-semibold text-gray-800 dark:text-gray-100 flex items-center justify-between">
+                          Notes
+                          <Button size="sm" onClick={handleAddNote}>
+                            Add Note
+                          </Button>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-6 space-y-4">
+                        {notesLoading ? (
+                          <div className="text-gray-500 dark:text-gray-400">Loading notes...</div>
+                        ) : safeNotes.length === 0 ? (
+                          <div className="text-gray-500 dark:text-gray-400">No notes yet.</div>
+                        ) : (
+                          <ul className="space-y-3">
+                            {safeNotes.map((n: any) => (
+                              <li key={n.id} className="flex items-start justify-between bg-slate-50 dark:bg-slate-800 rounded-lg p-3">
+                                <div>
+                                  <div className="text-sm text-gray-900 dark:text-gray-100 whitespace-pre-line">{n.content}</div>
+                                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">{new Date(n.created_at).toLocaleString()}</div>
+                                </div>
+                                <Button variant="ghost" size="icon" onClick={() => deleteNote(n.id)} aria-label="Delete note">
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                </Button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </CardContent>
+                    </Card>
                   </TabsContent>
                 </CardContent>
               </Tabs>
@@ -622,6 +707,14 @@ const CandidateDetail: React.FC = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <DeleteConfirmationModal
+        open={showDeleteModal}
+        onOpenChange={setShowDeleteModal}
+        onConfirm={handleDelete}
+        jobTitle={fullName}
+        isDeleting={false}
+      />
     </div>
   );
 };

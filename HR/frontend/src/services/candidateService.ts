@@ -12,21 +12,36 @@ export const fetchCandidates = async (page: number, search: string, filters: any
     }
   });
 
-  const response = await api.get(`/api/candidates/?${params.toString()}`);
+  const response = await api.get(`/candidates/?${params.toString()}`);
+  return response.data;
+};
+
+export const getCandidate = async (id: number) => {
+  const response = await api.get(`/candidates/${id}/`);
+  return response.data;
+};
+
+export const createCandidate = async (data: any) => {
+  const response = await api.post('/candidates/', data);
+  return response.data;
+};
+
+export const updateCandidate = async (id: number, data: any) => {
+  const response = await api.put(`/candidates/${id}/`, data);
   return response.data;
 };
 
 export const deleteCandidate = async (id: number) => {
-  const response = await api.delete(`/api/candidates/${id}/`);
+  const response = await api.delete(`/candidates/${id}/`);
   return response.data;
 };
 
 export const fetchFilterOptions = async () => {
   const [jobTitles, cities, sources, communicationSkills] = await Promise.all([
-    api.get('/api/jobtitles/'),
-    api.get('/api/cities/'),
-    api.get('/api/sources/'),
-    api.get('/api/communicationskills/'),
+    api.get('/jobtitles/'),
+    api.get('/cities/'),
+    api.get('/sources/'),
+    api.get('/communicationskills/'),
   ]);
 
   return {

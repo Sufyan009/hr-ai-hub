@@ -229,7 +229,14 @@ const Dashboard: React.FC = () => {
                       <span className="font-medium text-gray-800 dark:text-gray-100">
                         {activity.activity || activity.message || 'No details'}
                       </span>
-                      <div className="mt-1">{getStatusBadge(activity.status || '')}</div>
+                      <div className="mt-1 flex items-center gap-2">
+                        {activity.status && activity.status.trim() !== '' && getStatusBadge(activity.status)}
+                        {activity.user && activity.user.role && activity.user.role !== 'Unknown' && (
+                          <span className="inline-block px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-xs font-semibold dark:bg-blue-900 dark:text-blue-200 ml-2">
+                            {activity.user.role.charAt(0).toUpperCase() + activity.user.role.slice(1)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <span className="text-xs text-gray-500 dark:text-gray-400">

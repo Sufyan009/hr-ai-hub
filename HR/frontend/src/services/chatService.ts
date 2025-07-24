@@ -1,9 +1,9 @@
+import axios from 'axios';
 import api from './api';
 
 export const fetchModels = async () => {
-  const response = await api.get('/openrouter-models/');
-  // OpenRouter returns { data: [...] }, so return .data if present
-  return response.data?.data || response.data;
+  const response = await axios.get('http://127.0.0.1:8001/models');
+  return response.data.models || response.data;
 };
 
 // Accepts either (message, model, prompt) or ({ model, messages, prompt, extra_headers, extra_body })
@@ -16,7 +16,8 @@ export const sendMessage = async (
     extra_body?: any
   },
   model?: string,
-  prompt?: string
+  prompt?: string,
+  axiosConfig?: any
 ) => {
   let payload;
   if (typeof messageOrPayload === 'string') {
@@ -30,6 +31,46 @@ export const sendMessage = async (
     // Advanced: full payload
     payload = { ...messageOrPayload };
   }
-  const response = await api.post('/chat/', payload);
+  // Always include authToken from localStorage if present
+  const token = localStorage.getItem('authToken');
+  if (token) {
+    payload.authToken = token;
+  }
+  const response = await axios.post('http://127.0.0.1:8001/chat', payload, axiosConfig);
+  return response.data;
+};
+
+export const getChatSessions = async () => {
+  const response = await api.get('/chatsessions/');
+  return response.data;
+};
+
+export const createChatSession = async (data: { session_name?: string; role?: string }) => {
+  const response = await api.post('/chatsessions/', data);
+  return response.data;
+};
+
+export const deleteChatSession = async (id: number) => {
+  const response = await api.delete(`/chatsessions/${id}/`);
+  return response.data;
+};
+
+export const updateChatSession = async (id: number, data: { session_name?: string; role?: string; model?: string }) => {
+  const response = await api.patch(`/chatsessions/${id}/`, data);
+  return response.data;
+};
+
+export const getChatMessages = async (sessionId: number) => {
+  const response = await api.get(`/chatmessages/?session=${sessionId}`);
+  return response.data;
+};
+
+export const createChatMessage = async (data: { session: number; role: string; content: string }) => {
+  const response = await api.post('/chatmessages/', data);
+  return response.data;
+};
+
+export const deleteChatMessage = async (id: number) => {
+  const response = await api.delete(`/chatmessages/${id}/`);
   return response.data;
 }; 

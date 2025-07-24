@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
+  // Set your MCP server URL here. Use VITE_API_BASE_URL for environment flexibility.
   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
 });
 

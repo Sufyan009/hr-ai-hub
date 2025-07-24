@@ -35,6 +35,16 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
+from django.utils.dateparse import parse_date
+from collections import Counter
+from rest_framework import viewsets, permissions, filters
+from .models import ChatSession, ChatMessage
+from .serializers import ChatSessionSerializer, ChatMessageSerializer
+from rest_framework.permissions import IsAuthenticated
+from .models import Note
+from .serializers import NoteSerializer
+from rest_framework import viewsets, permissions
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +98,11 @@ class CandidateViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         new_stage = serializer.instance.candidate_stage
+        name = f"{serializer.instance.first_name} {serializer.instance.last_name}".strip()
         if old_stage != new_stage:
-            name = f"{instance.first_name} {instance.last_name}".strip()
             create_notification(request.user, f"Candidate {name} stage changed to '{new_stage}'.")
+        else:
+            create_notification(request.user, f"Candidate {name} was updated.")
         return Response(serializer.data)
 
 class NotificationViewSet(viewsets.ModelViewSet):
@@ -105,24 +117,45 @@ class NotificationViewSet(viewsets.ModelViewSet):
 @permission_classes([IsAuthenticated])
 def metrics_view(request):
     from .models import JobPost  # Ensure JobPost is imported
+    from .models import Candidate
+    from django.db.models import Q
+    now = timezone.now()
+    # Calculate the first and last day of the current month
+    first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # Fallback: count candidates hired this month by created_at (not perfect if stage changes after creation)
+    hired_this_month = Candidate.objects.filter(
+        candidate_stage__iexact='hired',
+        created_at__gte=first_of_month
+    ).count()
+    pending_reviews = Candidate.objects.filter(candidate_stage__iexact='screening').count()
     return Response({
-        "total_candidates": Candidate.objects.count(),  # type: ignore[attr-defined]
-        "hired": Candidate.objects.filter(candidate_stage__iexact='hired').count(),  # type: ignore[attr-defined]
-        "rejected": Candidate.objects.filter(candidate_stage__iexact='rejected').count(),  # type: ignore[attr-defined]
-        "active_positions": JobPost.objects.filter(status='open').count(),  # Added active positions
-        # Add more metrics as needed
+        "total_candidates": Candidate.objects.count(),
+        "hired": Candidate.objects.filter(candidate_stage__iexact='hired').count(),
+        "rejected": Candidate.objects.filter(candidate_stage__iexact='rejected').count(),
+        "active_positions": JobPost.objects.filter(status='open').count(),
+        "hired_this_month": hired_this_month,
+        "pending_reviews": pending_reviews,  # Now dynamic
+        # TODO: For perfect accuracy, add a hired_at field and update it when stage changes to 'hired'.
     })
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def recent_activities_view(request):
-    # Return the last 10 notifications for the user as recent activities
-    notifications = Notification.objects.filter(user=request.user).order_by('-created_at')[:10]
+    # Allow configurable activity count via ?limit= param (default 10)
+    try:
+        limit = int(request.GET.get('limit', 10))
+    except (ValueError, TypeError):
+        limit = 10
+    notifications = Notification.objects.filter(user=request.user).order_by('-created_at')[:limit]
     activities = [
         {
             "activity": n.message,
             "timestamp": n.created_at.isoformat(),
-            "is_read": n.is_read
+            "is_read": n.is_read,
+            "user": {
+                "username": n.user.username if n.user else "Unknown",
+                "role": getattr(n.user, 'role', None) or "Unknown"
+            }
         }
         for n in notifications
     ]
@@ -310,8 +343,23 @@ class JobPostViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         job_post = serializer.save(posted_by=self.request.user)
-        # Notify the user who created the job post
         create_notification(self.request.user, f"Job '{job_post.title}' was posted.")
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        create_notification(request.user, f"Job '{serializer.instance.title}' was updated.")
+        return Response(serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        title = instance.title
+        response = super().destroy(request, *args, **kwargs)
+        create_notification(request.user, f"Job '{title}' was deleted.")
+        return response
 
 class JobPostTitleChoices(APIView):
     permission_classes = [IsAuthenticated]
@@ -325,6 +373,33 @@ def unread_notifications_view(request):
     unread = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')
     serializer = NotificationSerializer(unread, many=True)
     return Response(serializer.data)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def candidate_metrics_view(request):
+    qs = Candidate.objects.all()
+    created_after = request.GET.get('created_after')
+    created_before = request.GET.get('created_before')
+    if created_after:
+        qs = qs.filter(created_at__gte=parse_date(created_after))
+    if created_before:
+        qs = qs.filter(created_at__lte=parse_date(created_before))
+    stages = qs.values_list('candidate_stage', flat=True)
+    sources = qs.values_list('source__name', flat=True)
+    stage_counts = Counter(stages)
+    source_counts = Counter(sources)
+    most_common_stage = stage_counts.most_common(1)[0][0] if stage_counts else None
+    top_source = source_counts.most_common(1)[0][0] if source_counts else None
+    metrics = {
+        'total': qs.count(),
+        'hired': qs.filter(candidate_stage__iexact='hired').count(),
+        'rejected': qs.filter(candidate_stage__iexact='rejected').count(),
+        'by_stage': dict(stage_counts),
+        'by_source': dict(source_counts),
+        'most_common_stage': most_common_stage,
+        'top_source': top_source,
+    }
+    return Response(metrics)
 
 UserModel = get_user_model()
 
@@ -408,4 +483,57 @@ class EmailVerificationConfirmView(APIView):
             return Response({'error': 'Invalid or expired token.'}, status=400)
         user.is_active = True
         user.save()
-        return Response({'message': 'Email verified successfully.'}) 
+        return Response({'message': 'Email verified successfully.'})
+
+class IsOwnerOrReadOnly(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        return obj.user == request.user
+
+class ChatSessionViewSet(viewsets.ModelViewSet):
+    serializer_class = ChatSessionSerializer
+    permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
+    filter_backends = [filters.OrderingFilter]
+    ordering = ['-updated_at']
+
+    def get_queryset(self):
+        return ChatSession.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+class ChatMessageViewSet(viewsets.ModelViewSet):
+    serializer_class = ChatMessageSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.OrderingFilter]
+    ordering = ['timestamp']
+
+    def get_queryset(self):
+        session_id = self.request.query_params.get('session')
+        qs = ChatMessage.objects.filter(session__user=self.request.user)
+        if session_id:
+            qs = qs.filter(session_id=session_id)
+        return qs
+
+    def perform_create(self, serializer):
+        # Only allow creating messages for sessions owned by the user
+        session = serializer.validated_data['session']
+        if session.user != self.request.user:
+            raise permissions.PermissionDenied('You do not own this chat session.')
+        serializer.save()
+
+# NoteViewSet for CRUD operations
+class NoteViewSet(viewsets.ModelViewSet):
+    queryset = Note.objects.all().order_by('-created_at')
+    serializer_class = NoteSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        candidate_id = self.request.query_params.get('candidate')
+        if candidate_id:
+            queryset = queryset.filter(candidate_id=candidate_id)
+        return queryset
+
+    def perform_create(self, serializer):
+        candidate_id = self.request.data.get('candidate')
+        serializer.save(candidate_id=candidate_id) 
