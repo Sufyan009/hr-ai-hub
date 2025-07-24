@@ -1,59 +1,84 @@
-# HR AI Hub
+# Candidate Management Platform
 
-## Project Overview
+This application consists of a Django backend and a React frontend for managing candidates in a recruitment process.
 
-**HR AI Hub** is a modern, full-stack platform designed to streamline and enhance human resources operations using AI. The project consists of:
-- **MCP Server (Backend):** Handles business logic, AI processing, and data management.
-- **ChatPage Client (Frontend):** A responsive, interactive chat interface for HR queries and management, acting as a client to the MCP server.
+## Project Structure
 
-This architecture enables scalable, secure, and intelligent HR workflows for organizations of any size.
+- `candidate_mcp/` - Django backend
+- `candidate_ui/` - React frontend
 
-## Features
-- AI-powered HR assistant chat interface
-- Role-based authentication and user management
-- Job posting and candidate management
-- Real-time notifications
-- Responsive, modern UI/UX
-- Integration-ready for advanced AI models (OpenRouter, etc.)
+## Setup Instructions
 
-## Tech Stack
-- **Frontend:** React, TypeScript, Vite, Tailwind CSS, shadcn/ui, Axios
-- **Backend:** Django, Django REST Framework, Python, PostgreSQL (or SQLite for dev)
-- **AI Integration:** OpenRouter.ai API (pluggable)
-- **Other:** Docker-ready, Git version control
+### Backend Setup
 
-## Getting Started
-
-### Prerequisites
-- Node.js & npm
-- Python 3.x & pip
-- (Optional) Docker
-
-### Setup
-1. **Clone the repository:**
-   ```sh
-   git clone https://github.com/Sufyan009/talenthub.git
-   cd talenthub/HR
+1. Navigate to the backend directory:
    ```
-2. **Backend:**
-   ```sh
-   cd backend
-   python -m venv venv
-   source venv/bin/activate  # or venv\Scripts\activate on Windows
-   pip install -r requirements.txt
+   cd candidate_mcp
+   ```
+
+2. Install dependencies (if not already installed):
+   ```
+   pip install django djangorestframework django-cors-headers
+   ```
+
+3. Apply migrations:
+   ```
    python manage.py migrate
+   ```
+
+4. Create a test user:
+   ```
+   python create_test_user.py
+   ```
+   This will create a user with the following credentials:
+   - Username: testuser
+   - Password: password123
+   - And will display the authentication token
+
+5. Start the backend server:
+   ```
    python manage.py runserver
    ```
-3. **Frontend:**
-   ```sh
-   cd ../frontend
+   The backend will be available at http://localhost:8000/
+
+### Frontend Setup
+
+1. Navigate to the frontend directory:
+   ```
+   cd candidate_ui
+   ```
+
+2. Install dependencies:
+   ```
    npm install
+   ```
+
+3. Start the development server:
+   ```
    npm run dev
    ```
-4. **Access the app:**
-   - Frontend: http://localhost:5173
-   - Backend API: http://localhost:8000
+   The frontend will be available at http://localhost:3000/
 
-## License
+## Authentication
 
-This project is licensed under the MIT License. 
+The application uses token-based authentication. When you log in, a token is generated and stored in localStorage. This token is included in all subsequent API requests.
+
+## Features
+
+- User authentication (login/logout)
+- Protected routes that require authentication
+- User profile management
+- Candidate management
+- Dashboard with metrics
+
+## API Endpoints
+
+- `/candidates/api/token/` - Obtain authentication token
+- `/candidates/api/profile/` - User profile management
+- `/candidates/api/` - Candidate list and creation
+- `/candidates/api/<id>/` - Candidate detail, update, and deletion
+
+## Troubleshooting
+
+- If you encounter CORS issues, make sure the frontend URL is included in the `CORS_ALLOWED_ORIGINS` setting in the backend's `settings.py`.
+- If authentication fails, check that the token is being correctly included in the request headers.
