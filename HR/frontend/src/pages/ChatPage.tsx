@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   Send, Bot, User, Settings, Eraser, Copy, MoreVertical, MessageSquare, RefreshCw,
-  Volume2, VolumeX, Download, Building2, Shield, TrendingUp, Users, Pencil, Plus, Check, X, Trash2, ChevronLeft, ChevronRight, Paperclip, AppWindow, Megaphone, Brush, Globe, PenTool, Mic, ArrowUp
+  Volume2, VolumeX, Download, Building2, Shield, TrendingUp, Users, Pencil, Plus, Check, X, Trash2, ChevronLeft, ChevronRight, Paperclip, AppWindow, Megaphone, Brush, Globe, PenTool, Mic, ArrowUp,
+  FileText, List, Briefcase, Search
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -320,13 +321,30 @@ const InputBar = ({
             <span className="hidden md:inline">Tools</span>
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white">
+        <DropdownMenuContent align="start" className="w-72 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800 p-2">
           {[
             { name: 'Get Candidate', desc: 'get_candidate <candidate_id>', icon: <User className="h-5 w-5 mr-2" /> },
             { name: 'Delete Candidate', desc: 'delete_candidate <candidate_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
             { name: 'Update Candidate', desc: 'update_candidate <candidate_id> <field> <value>', icon: <Pencil className="h-5 w-5 mr-2" /> },
             { name: 'Candidate Metrics', desc: 'get_candidate_metrics', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
             { name: 'List Candidates', desc: 'list_candidates', icon: <Users className="h-5 w-5 mr-2" /> },
+            { name: 'Add Candidate', desc: 'add_candidate', icon: <User className="h-5 w-5 mr-2" /> },
+            { name: 'Add Note', desc: 'add_note <candidate_id> <content>', icon: <FileText className="h-5 w-5 mr-2" /> },
+            { name: 'List Notes', desc: 'list_notes <candidate_id>', icon: <List className="h-5 w-5 mr-2" /> },
+            { name: 'Delete Note', desc: 'delete_note <note_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+            { name: 'List Job Titles', desc: 'list_job_titles', icon: <Briefcase className="h-5 w-5 mr-2" /> },
+            { name: 'Export Candidates', desc: 'export_candidates_csv', icon: <Download className="h-5 w-5 mr-2" /> },
+            { name: 'Recent Activities', desc: 'get_recent_activities', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
+            { name: 'Overall Metrics', desc: 'get_overall_metrics', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
+            { name: 'List Job Posts', desc: 'list_job_posts', icon: <FileText className="h-5 w-5 mr-2" /> },
+            { name: 'Add Job Post', desc: 'add_job_post', icon: <Plus className="h-5 w-5 mr-2" /> },
+            { name: 'Update Job Post', desc: 'update_job_post <job_post_id>', icon: <Pencil className="h-5 w-5 mr-2" /> },
+            { name: 'Delete Job Post', desc: 'delete_job_post <job_post_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+            { name: 'Job Post Choices', desc: 'get_job_post_title_choices', icon: <List className="h-5 w-5 mr-2" /> },
+            { name: 'Search Candidates', desc: 'search_candidates <filters>', icon: <Search className="h-5 w-5 mr-2" /> },
+            { name: 'Bulk Update', desc: 'bulk_update_candidates <ids> <field> <value>', icon: <Users className="h-5 w-5 mr-2" /> },
+            { name: 'Bulk Delete', desc: 'bulk_delete_candidates <ids>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+            { name: 'Get Job Post', desc: 'get_job_post <job_post_id>', icon: <FileText className="h-5 w-5 mr-2" /> },
           ].map(tool => (
             <DropdownMenuItem
               key={tool.name}
@@ -724,11 +742,13 @@ const HRAssistantPro: React.FC = () => {
 
   const handleSendMessage = async (messageText?: string) => {
     let sessionId = activeSessionId;
+    let isNewSession = false;
     if (!sessionId) {
       const session = await createChatSession({});
       setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)]);
       setActiveSessionId(session.id);
       sessionId = session.id;
+      isNewSession = true;
     }
     const tempId = 'pending-' + Date.now();
     const userMessage: Message = {
@@ -738,6 +758,19 @@ const HRAssistantPro: React.FC = () => {
       timestamp: new Date(),
       tokens: Math.ceil((messageText || inputValue).length / 4),
     };
+    // Save user message to backend
+    await createChatMessage({ session: sessionId, role: 'user', content: userMessage.content });
+    
+    // If this is a new session, refresh the session list to get the auto-generated name
+    if (isNewSession) {
+      try {
+        const updatedSessions = await getChatSessions();
+        setSessions(Array.isArray(updatedSessions) ? updatedSessions : updatedSessions.results || []);
+      } catch (error) {
+        console.error('Failed to refresh sessions:', error);
+      }
+    }
+    
     setPendingMessages(prev => [...prev, userMessage]);
     setInputValue('');
     setIsLoading(true);
@@ -876,6 +909,16 @@ const HRAssistantPro: React.FC = () => {
     });
   };
 
+  // Fix: ensure model dropdown below input updates both selectedModel and sessionModel
+  const handleInputBarModelChange = (modelId: string) => {
+    setSelectedModel(modelId);
+    setSessionModel(modelId);
+    if (activeSessionId) {
+      updateChatSession(activeSessionId, { model: modelId });
+      setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, model: modelId } : s));
+    }
+  };
+
   return (
     <ErrorBoundary>
       <TooltipProvider>
@@ -919,7 +962,7 @@ const HRAssistantPro: React.FC = () => {
               editingSessionId={editingSessionId}
               editingSessionName={editingSessionName}
               setEditingSessionName={setEditingSessionName}
-              onSaveRename={id => handleRenameSession(id, editingSessionName)}
+              onSaveRename={handleSaveRename}
               onCancelRename={handleCancelRename}
               menuOpenId={menuOpenId}
               setMenuOpenId={setMenuOpenId}
@@ -952,11 +995,11 @@ const HRAssistantPro: React.FC = () => {
               onChange={setInputValue}
               onSend={() => handleSendMessage()}
               isLoading={isLoading}
-              disabled={modelsLoading || !selectedModel}
-              onNewChat={handleNewChat}
-              selectedModel={selectedModel}
+              disabled={isTyping}
+              onNewChat={handleCreateChat}
+              selectedModel={sessionModel}
               availableModels={models}
-              onModelChange={handleModelChange}
+              onModelChange={handleInputBarModelChange}
             />
             </div>
           </div>

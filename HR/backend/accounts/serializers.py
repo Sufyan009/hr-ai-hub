@@ -73,8 +73,13 @@ class ChatMessageSerializer(serializers.ModelSerializer):
 class ChatSessionSerializer(serializers.ModelSerializer):
     messages = ChatMessageSerializer(many=True, read_only=True)
     user = serializers.PrimaryKeyRelatedField(read_only=True)
+    latest_message = serializers.SerializerMethodField()
 
     class Meta:
         model = ChatSession
-        fields = ['id', 'user', 'session_name', 'role', 'model', 'created_at', 'updated_at', 'messages']
-        read_only_fields = ['id', 'created_at', 'updated_at', 'messages', 'user'] 
+        fields = ['id', 'user', 'session_name', 'role', 'model', 'created_at', 'updated_at', 'messages', 'latest_message']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'messages', 'user']
+
+    def get_latest_message(self, obj):
+        last_msg = obj.messages.order_by('-timestamp').first()
+        return last_msg.content if last_msg else None 

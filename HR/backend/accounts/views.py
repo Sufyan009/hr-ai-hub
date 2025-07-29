@@ -499,8 +499,18 @@ class ChatSessionViewSet(viewsets.ModelViewSet):
         return ChatSession.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
+        # Generate intelligent session name if not provided
+        if not serializer.validated_data.get('session_name'):
+            # Create session first
+            session = serializer.save(user=self.request.user)
+            
+            # Set a temporary name that will be updated
+            session.session_name = "New Conversation"
+            session.save()
+            
+            return session
+        else:
+            return serializer.save(user=self.request.user)
 class ChatMessageViewSet(viewsets.ModelViewSet):
     serializer_class = ChatMessageSerializer
     permission_classes = [IsAuthenticated]
@@ -519,7 +529,133 @@ class ChatMessageViewSet(viewsets.ModelViewSet):
         session = serializer.validated_data['session']
         if session.user != self.request.user:
             raise permissions.PermissionDenied('You do not own this chat session.')
-        serializer.save()
+        
+        # Save the message
+        message = serializer.save()
+        
+        # Update session name if this is the first message and session has default name
+        if (session.session_name == "New Conversation" and 
+            message.role == 'user' and 
+            ChatMessage.objects.filter(session=session).count() == 1):
+            
+            # Generate intelligent name based on the message content
+            session_name = self._generate_session_name(message.content)
+            session.session_name = session_name
+            session.save()
+        
+        return message
+    
+    def _generate_session_name(self, message_content):
+        """Generate an intelligent session name based on message content"""
+        if not message_content:
+            return "New Conversation"
+        
+        message_lower = message_content.lower()
+        
+        # Define patterns for different types of conversations
+        patterns = {
+            'candidate_management': [
+                'add candidate', 'new candidate', 'create candidate', 'candidate named',
+                'show candidate', 'find candidate', 'candidate with email', 'candidate details',
+                'update candidate', 'delete candidate', 'candidate status'
+            ],
+            'candidate_listing': [
+                'list candidates', 'show candidates', 'all candidates', 'candidates in',
+                'candidates with', 'candidate count', 'how many candidates'
+            ],
+            'analytics': [
+                'analytics', 'metrics', 'statistics', 'dashboard', 'overview', 'summary',
+                'hiring metrics', 'candidate metrics', 'performance', 'reports'
+            ],
+            'job_management': [
+                'job post', 'job posting', 'create job', 'add job', 'job description',
+                'job title', 'job requirements', 'job position'
+            ],
+            'interview': [
+                'interview', 'schedule interview', 'interview candidate', 'interview process',
+                'interview questions', 'interview framework'
+            ],
+            'onboarding': [
+                'onboarding', 'new hire', 'employee onboarding', 'orientation',
+                'welcome process', 'induction'
+            ],
+            'performance': [
+                'performance review', 'employee evaluation', 'kpi', 'performance metrics',
+                'employee assessment', 'review process'
+            ],
+            'general_hr': [
+                'hr policy', 'hr question', 'hr best practice', 'hr advice',
+                'human resources', 'hr process'
+            ]
+        }
+        
+        # Analyze the conversation type
+        conversation_type = 'general'
+        for pattern_type, pattern_list in patterns.items():
+            for pattern in pattern_list:
+                if pattern in message_lower:
+                    conversation_type = pattern_type
+                    break
+            if conversation_type != 'general':
+                break
+        
+        # Extract specific details for more descriptive names
+        specific_details = []
+        
+        # Look for candidate names
+        import re
+        name_match = re.search(r'(?:candidate named|add candidate|new candidate)\s+([a-zA-Z]+\s+[a-zA-Z]+)', message_lower)
+        if name_match:
+            specific_details.append(f"({name_match.group(1).title()})")
+        
+        # Look for job titles
+        job_match = re.search(r'(?:position|job title|for the)\s+([a-zA-Z\s]+)(?:position|job|with)', message_lower)
+        if job_match:
+            job_title = job_match.group(1).strip()
+            if job_title and len(job_title) > 2:
+                specific_details.append(f"({job_title.title()})")
+        
+        # Look for specific actions
+        actions = []
+        if any(action in message_lower for action in ['add', 'create', 'new']):
+            actions.append('Add')
+        elif any(action in message_lower for action in ['update', 'edit', 'modify']):
+            actions.append('Update')
+        elif any(action in message_lower for action in ['delete', 'remove']):
+            actions.append('Delete')
+        elif any(action in message_lower for action in ['show', 'list', 'find', 'search']):
+            actions.append('View')
+        elif any(action in message_lower for action in ['analytics', 'metrics', 'dashboard']):
+            actions.append('Analytics')
+        
+        # Generate the session name
+        if conversation_type == 'candidate_management':
+            if actions:
+                base_name = f"{actions[0]} Candidate"
+            else:
+                base_name = "Candidate Management"
+        elif conversation_type == 'candidate_listing':
+            base_name = "View Candidates"
+        elif conversation_type == 'analytics':
+            base_name = "HR Analytics"
+        elif conversation_type == 'job_management':
+            base_name = "Job Management"
+        elif conversation_type == 'interview':
+            base_name = "Interview Process"
+        elif conversation_type == 'onboarding':
+            base_name = "Employee Onboarding"
+        elif conversation_type == 'performance':
+            base_name = "Performance Review"
+        elif conversation_type == 'general_hr':
+            base_name = "HR Discussion"
+        else:
+            base_name = "HR Assistant"
+        
+        # Combine base name with specific details
+        if specific_details:
+            return f"{base_name} {specific_details[0]}"
+        else:
+            return base_name
 
 # NoteViewSet for CRUD operations
 class NoteViewSet(viewsets.ModelViewSet):
