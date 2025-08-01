@@ -20,11 +20,12 @@ import { Card, CardContent } from '@/components/ui/card';
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
-import { sendMessage, fetchModels, getChatSessions, createChatSession, deleteChatSession, getChatMessages, createChatMessage, updateChatSession } from '@/services/chatService';
+import { sendMessage, fetchModels, getChatSessions, createChatSession, deleteChatSession, getChatMessages, createChatMessage, updateChatSession, uploadCandidatesFile, uploadSingleFile, processUploadedFile, downloadCandidateTemplate } from '@/services/chatService';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import ChatSidebar from '@/components/layout/ChatSidebar';
+import BulkUploadModal from '../components/BulkUploadModal';
 
 // Interfaces
 interface Message {
@@ -239,143 +240,211 @@ const InputBar = ({
   selectedModel,
   availableModels,
   onModelChange,
-}) => (
-  <div className="flex flex-col gap-2 w-full px-4 pb-4">
-    <div className="relative w-full">
-      <Textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Ask anything"
-        className="w-full rounded-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white px-6 py-4 pr-14 border-0 shadow-none focus:ring-2 focus:ring-blue-500 focus:outline-none text-lg placeholder:text-slate-400 min-h-[56px] max-h-[120px] resize-none"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !isLoading && !disabled) {
-            e.preventDefault();
-            onSend();
-          }
-        }}
-        disabled={disabled}
-        aria-label="Enter your query"
-        style={{ fontWeight: 500 }}
-      />
-      <Button
-        variant="ghost"
-        size="icon"
-        className={`absolute right-2 top-1/2 -translate-y-1/2 h-12 w-12 rounded-full flex items-center justify-center border-0 shadow-none transition
-    ${value.trim() ? 'bg-zinc-800 hover:bg-zinc-700' : 'bg-white hover:bg-gray-200'}`}
-  onClick={onSend}
-  disabled={isLoading || disabled || !value.trim()}
-  aria-label="Send message"
->
-  <ArrowUp className={`h-6 w-6 ${value.trim() ? 'text-white' : 'text-zinc-900'}`} />
-</Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="absolute right-14 top-1/2 -translate-y-1/2 h-10 w-10 text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
-        aria-label="Voice input"
-        type="button"
-        disabled
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
-      </Button>
-    </div>
-    <div className="flex items-center gap-2 mt-2">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+  onFileUpload,
+  onStop,
+}) => {
+  console.log("[DEBUG] InputBar render - isLoading:", isLoading, "onStop:", !!onStop);
+  
+  return (
+    <div className="flex flex-col gap-2 w-full px-4 pb-4">
+      <div className="relative w-full">
+        <Textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Ask anything"
+          className="w-full rounded-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white px-6 py-4 pr-14 border-0 shadow-none focus:ring-2 focus:ring-blue-500 focus:outline-none text-lg placeholder:text-slate-400 min-h-[56px] max-h-[120px] resize-none"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !isLoading && !disabled) {
+              e.preventDefault();
+              onSend();
+            }
+          }}
+          disabled={disabled}
+          aria-label="Enter your query"
+          style={{ fontWeight: 500 }}
+        />
+        
+        {/* Stop Button - Show when loading */}
+        {isLoading && onStop && (
           <Button
             variant="ghost"
             size="icon"
-            className="rounded-full h-10 w-10 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/80 text-white"
-            aria-label="Add"
-            type="button"
+            className="absolute right-2 top-1/2 -translate-y-1/2 h-12 w-12 rounded-full flex items-center justify-center border-0 shadow-none bg-red-500 hover:bg-red-600 text-white"
+            onClick={() => {
+              console.log("[DEBUG] Stop button clicked");
+              onStop();
+            }}
+            aria-label="Stop processing"
           >
-            <Plus className="h-5 w-5" />
+            <X className="h-6 w-6" />
           </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-60 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white">
-          <DropdownMenuItem className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700">
-            <Paperclip className="h-4 w-4 mr-2" />
-            <span>Add photos & files</span>
-          </DropdownMenuItem>
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700">
-              <AppWindow className="h-4 w-4 mr-2" />
-              <span>Add from apps</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-56 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800">
-              <DropdownMenuItem disabled className="text-slate-400">Coming soon…</DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+        )}
+        
+        {/* Send Button - Show when not loading */}
+        {!isLoading && (
           <Button
             variant="ghost"
-            size="sm"
-            className="rounded-full flex items-center gap-2 h-10 px-4 font-medium text-sm bg-slate-700/80 hover:bg-slate-600/80 text-white shadow-none border-none"
-            aria-label="Tools"
-            type="button"
+            size="icon"
+            className={`absolute right-2 top-1/2 -translate-y-1/2 h-12 w-12 rounded-full flex items-center justify-center border-0 shadow-none transition
+    ${value.trim() ? 'bg-zinc-800 hover:bg-zinc-700' : 'bg-white hover:bg-gray-200'}`}
+            onClick={onSend}
+            disabled={disabled || !value.trim()}
+            aria-label="Send message"
           >
-            <Settings className="h-5 w-5" />
-            <span className="hidden md:inline">Tools</span>
+            <ArrowUp className={`h-6 w-6 ${value.trim() ? 'text-white' : 'text-zinc-900'}`} />
           </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800 p-2">
-          {[
-            { name: 'Get Candidate', desc: 'get_candidate <candidate_id>', icon: <User className="h-5 w-5 mr-2" /> },
-            { name: 'Delete Candidate', desc: 'delete_candidate <candidate_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
-            { name: 'Update Candidate', desc: 'update_candidate <candidate_id> <field> <value>', icon: <Pencil className="h-5 w-5 mr-2" /> },
-            { name: 'Candidate Metrics', desc: 'get_candidate_metrics', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
-            { name: 'List Candidates', desc: 'list_candidates', icon: <Users className="h-5 w-5 mr-2" /> },
-            { name: 'Add Candidate', desc: 'add_candidate', icon: <User className="h-5 w-5 mr-2" /> },
-            { name: 'Add Note', desc: 'add_note <candidate_id> <content>', icon: <FileText className="h-5 w-5 mr-2" /> },
-            { name: 'List Notes', desc: 'list_notes <candidate_id>', icon: <List className="h-5 w-5 mr-2" /> },
-            { name: 'Delete Note', desc: 'delete_note <note_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
-            { name: 'List Job Titles', desc: 'list_job_titles', icon: <Briefcase className="h-5 w-5 mr-2" /> },
-            { name: 'Export Candidates', desc: 'export_candidates_csv', icon: <Download className="h-5 w-5 mr-2" /> },
-            { name: 'Recent Activities', desc: 'get_recent_activities', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
-            { name: 'Overall Metrics', desc: 'get_overall_metrics', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
-            { name: 'List Job Posts', desc: 'list_job_posts', icon: <FileText className="h-5 w-5 mr-2" /> },
-            { name: 'Add Job Post', desc: 'add_job_post', icon: <Plus className="h-5 w-5 mr-2" /> },
-            { name: 'Update Job Post', desc: 'update_job_post <job_post_id>', icon: <Pencil className="h-5 w-5 mr-2" /> },
-            { name: 'Delete Job Post', desc: 'delete_job_post <job_post_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
-            { name: 'Job Post Choices', desc: 'get_job_post_title_choices', icon: <List className="h-5 w-5 mr-2" /> },
-            { name: 'Search Candidates', desc: 'search_candidates <filters>', icon: <Search className="h-5 w-5 mr-2" /> },
-            { name: 'Bulk Update', desc: 'bulk_update_candidates <ids> <field> <value>', icon: <Users className="h-5 w-5 mr-2" /> },
-            { name: 'Bulk Delete', desc: 'bulk_delete_candidates <ids>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
-            { name: 'Get Job Post', desc: 'get_job_post <job_post_id>', icon: <FileText className="h-5 w-5 mr-2" /> },
-          ].map(tool => (
-            <DropdownMenuItem
-              key={tool.name}
-              onClick={() => onChange(tool.desc)}
-              className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700 text-sm"
+        )}
+        
+        <Button
+          variant="ghost"
+          size="icon"
+          className="absolute right-14 top-1/2 -translate-y-1/2 h-10 w-10 text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
+          aria-label="Voice input"
+          type="button"
+          disabled
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+        </Button>
+      </div>
+      <div className="flex items-center gap-2 mt-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full h-10 w-10 flex items-center justify-center bg-slate-700/80 hover:bg-slate-600/80 text-white"
+              aria-label="Add"
+              type="button"
             >
-              {tool.icon}
-              <span>{tool.name}</span>
+              <Plus className="h-5 w-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-60 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white">
+            <DropdownMenuItem 
+              className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700"
+              onClick={() => document.getElementById('chat-file-upload')?.click()}
+            >
+              <Paperclip className="h-4 w-4 mr-2" />
+              <span>Upload files</span>
             </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <Select
-        value={selectedModel}
-        onValueChange={onModelChange}
-        disabled={disabled}
-      >
-        <SelectTrigger className="w-[180px] text-sm bg-slate-700/80 hover:bg-slate-600/80 text-white rounded-full h-10 px-4">
-          <SelectValue placeholder="Select Model" />
-        </SelectTrigger>
-        <SelectContent style={{ maxHeight: 240, overflowY: 'auto' }}>
-          {availableModels.map((model) => (
-            <SelectItem key={model.id} value={model.id}>
-              {model.label || model.id}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+            <DropdownMenuItem 
+              className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700"
+              onClick={async () => {
+                try {
+                  await downloadCandidateTemplate();
+                  toast({ 
+                    title: 'Template Downloaded', 
+                    description: 'Candidate template CSV file downloaded successfully.',
+                    variant: 'default'
+                  });
+                } catch (error) {
+                  toast({ 
+                    title: 'Download Failed', 
+                    description: 'Failed to download template. Please try again.',
+                    variant: 'destructive'
+                  });
+                }
+              }}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              <span>Download Template</span>
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700">
+                <AppWindow className="h-4 w-4 mr-2" />
+                <span>Add from apps</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-56 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800">
+                <DropdownMenuItem disabled className="text-slate-400">Coming soon…</DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rounded-full flex items-center gap-2 h-10 px-4 font-medium text-sm bg-slate-700/80 hover:bg-slate-600/80 text-white shadow-none border-none"
+              aria-label="Tools"
+              type="button"
+            >
+              <Settings className="h-5 w-5" />
+              <span className="hidden md:inline">Tools</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-72 rounded-xl shadow-lg border border-slate-700 mt-2 bg-slate-800 text-white max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800 p-2">
+            {[
+              { name: 'Get Candidate', desc: 'get_candidate <candidate_id>', icon: <User className="h-5 w-5 mr-2" /> },
+              { name: 'Delete Candidate', desc: 'delete_candidate <candidate_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+              { name: 'Update Candidate', desc: 'update_candidate <candidate_id> <field> <value>', icon: <Pencil className="h-5 w-5 mr-2" /> },
+              { name: 'Candidate Metrics', desc: 'get_candidate_metrics', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
+              { name: 'List Candidates', desc: 'list_candidates', icon: <Users className="h-5 w-5 mr-2" /> },
+              { name: 'Add Candidate', desc: 'add_candidate', icon: <User className="h-5 w-5 mr-2" /> },
+              { name: 'Add Note', desc: 'add_note <candidate_id> <content>', icon: <FileText className="h-5 w-5 mr-2" /> },
+              { name: 'List Notes', desc: 'list_notes <candidate_id>', icon: <List className="h-5 w-5 mr-2" /> },
+              { name: 'Delete Note', desc: 'delete_note <note_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+              { name: 'List Job Titles', desc: 'list_job_titles', icon: <Briefcase className="h-5 w-5 mr-2" /> },
+              { name: 'Export Candidates', desc: 'export_candidates_csv', icon: <Download className="h-5 w-5 mr-2" /> },
+              { name: 'Recent Activities', desc: 'get_recent_activities', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
+              { name: 'Overall Metrics', desc: 'get_overall_metrics', icon: <TrendingUp className="h-5 w-5 mr-2" /> },
+              { name: 'List Job Posts', desc: 'list_job_posts', icon: <FileText className="h-5 w-5 mr-2" /> },
+              { name: 'Add Job Post', desc: 'add_job_post', icon: <Plus className="h-5 w-5 mr-2" /> },
+              { name: 'Update Job Post', desc: 'update_job_post <job_post_id>', icon: <Pencil className="h-5 w-5 mr-2" /> },
+              { name: 'Delete Job Post', desc: 'delete_job_post <job_post_id>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+              { name: 'Job Post Choices', desc: 'get_job_post_title_choices', icon: <List className="h-5 w-5 mr-2" /> },
+              { name: 'Search Candidates', desc: 'search_candidates <filters>', icon: <Search className="h-5 w-5 mr-2" /> },
+              { name: 'Bulk Update', desc: 'bulk_update_candidates <ids> <field> <value>', icon: <Users className="h-5 w-5 mr-2" /> },
+              { name: 'Bulk Delete', desc: 'bulk_delete_candidates <ids>', icon: <Trash2 className="h-5 w-5 mr-2" /> },
+              { name: 'Get Job Post', desc: 'get_job_post <job_post_id>', icon: <FileText className="h-5 w-5 mr-2" /> },
+            ].map(tool => (
+              <DropdownMenuItem
+                key={tool.name}
+                onClick={() => onChange(tool.desc)}
+                className="flex items-center cursor-pointer rounded-lg px-3 py-2 hover:bg-slate-700 text-sm"
+              >
+                {tool.icon}
+                <span>{tool.name}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Select
+          value={selectedModel}
+          onValueChange={onModelChange}
+          disabled={disabled}
+        >
+          <SelectTrigger className="w-[180px] text-sm bg-slate-700/80 hover:bg-slate-600/80 text-white rounded-full h-10 px-4">
+            <SelectValue placeholder="Select Model" />
+          </SelectTrigger>
+          <SelectContent style={{ maxHeight: 240, overflowY: 'auto' }}>
+            {availableModels.map((model) => (
+              <SelectItem key={model.id} value={model.id}>
+                {model.label || model.id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Hidden file input */}
+      <input
+        type="file"
+        id="chat-file-upload"
+        className="hidden"
+        accept=".csv,.xlsx,.pdf,.doc,.docx"
+        title="Upload file for candidate processing"
+        aria-label="Upload file for candidate processing"
+        onChange={(e) => {
+          if (e.target.files && e.target.files[0]) {
+            onFileUpload(e.target.files[0]);
+            e.target.value = ''; // Reset input
+          }
+        }}
+      />
     </div>
-  </div>
-);
+  );
+};
 
 // Typing Indicator
 const TypingIndicator = React.forwardRef<HTMLDivElement>((props, ref) => (
@@ -409,7 +478,39 @@ const TypingIndicator = React.forwardRef<HTMLDivElement>((props, ref) => (
 const HRAssistantPro: React.FC = () => {
   const { toast } = useToast();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  
+
+  // Constants - moved to top to avoid initialization errors
+  const DEFAULT_PROMPT = `You are HR Assistant Pro, a friendly and highly capable AI HR assistant. Greet users warmly, answer their HR-related questions conversationally, and use your available tools to help with candidate management, analytics, and HR operations whenever appropriate. If a user asks for candidate details, analytics, or CRUD actions, proactively use your tools to fetch or update data. If the user asks a general HR question, answer conversationally and helpfully. Always be clear, concise, and supportive. If you need more information, politely ask clarifying questions. If a tool fails, explain the issue and suggest next steps. Your goal is to make HR easy, efficient, and approachable for everyone.`;
+
+  // State declarations - moved to top to avoid initialization errors
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionToDelete, setSessionToDelete] = useState<number | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
+  const [editingSessionName, setEditingSessionName] = useState('');
+  const [pendingMessages, setPendingMessages] = useState<Message[]>([]);
+  const [bulkModalSessionId, setBulkModalSessionId] = useState<number | null>(null);
+  const [inputValue, setInputValue] = useState('');
+  const [models, setModels] = useState<any[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState('');
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('hrAiModel') || '');
+  const [isLoading, setIsLoading] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState(DEFAULT_PROMPT);
+  const [showConfig, setShowConfig] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [chatStats, setChatStats] = useState<ChatStats>({
+    totalMessages: 0,
+    totalTokens: 0,
+    averageResponseTime: 1.2,
+    sessionsToday: 1,
+  });
+  const [modelSearch, setModelSearch] = useState('');
+  const [showClearModal, setShowClearModal] = useState(false);
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -439,23 +540,48 @@ const HRAssistantPro: React.FC = () => {
     }
   }, [user, isAuthenticated]);
 
-  // Load messages from localStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem('chatMessages');
-    if (saved) {
-      setMessages(JSON.parse(saved));
-    }
-  }, []);
 
-  // Save messages to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem('chatMessages', JSON.stringify(messages));
-  }, [messages]);
 
-  const [inputValue, setInputValue] = useState('');
-  
-  const DEFAULT_PROMPT = `You are HR Assistant Pro, a friendly and highly capable AI HR assistant. Greet users warmly, answer their HR-related questions conversationally, and use your available tools to help with candidate management, analytics, and HR operations whenever appropriate. If a user asks for candidate details, analytics, or CRUD actions, proactively use your tools to fetch or update data. If the user asks a general HR question, answer conversationally and helpfully. Always be clear, concise, and supportive. If you need more information, politely ask clarifying questions. If a tool fails, explain the issue and suggest next steps. Your goal is to make HR easy, efficient, and approachable for everyone.`;
-  
+  // Save messages to database whenever they change (but not system messages)
+  useEffect(() => {
+    const saveMessagesToDatabase = async () => {
+      if (activeSessionId && messages.length > 0) {
+        try {
+          // Filter out system messages and already saved messages
+          const messagesToSave = messages.filter(msg => 
+            msg.type !== 'system' && 
+            !msg.id.startsWith('pending-') && 
+            !msg.id.startsWith('temp-')
+          );
+
+          for (const message of messagesToSave) {
+            // Check if message already exists in database
+            const existingMessages = await getChatMessages(activeSessionId);
+            const actualExistingMessages = existingMessages.results || existingMessages;
+            const messageExists = actualExistingMessages.some((dbMsg: any) => 
+              dbMsg.content === message.content && 
+              new Date(dbMsg.timestamp).getTime() === message.timestamp.getTime()
+            );
+
+            if (!messageExists) {
+              await createChatMessage({
+                session: activeSessionId,
+                role: message.type === 'user' ? 'user' : 'assistant',
+                content: message.content
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error saving messages to database:', error);
+        }
+      }
+    };
+
+    // Debounce the save operation to avoid too many API calls
+    const timeoutId = setTimeout(saveMessagesToDatabase, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [messages, activeSessionId]);
+
   const QUICK_PROMPTS = [
     {
       title: 'Interview Framework',
@@ -479,30 +605,8 @@ const HRAssistantPro: React.FC = () => {
     },
   ];
 
-  const [models, setModels] = useState<any[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(true);
-  const [modelsError, setModelsError] = useState('');
-  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('hrAiModel') || '');
-  const [isLoading, setIsLoading] = useState(false);
-  const [customPrompt, setCustomPrompt] = useState(DEFAULT_PROMPT);
-  const [showConfig, setShowConfig] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [chatStats, setChatStats] = useState<ChatStats>({
-    totalMessages: 0,
-    totalTokens: 0,
-    averageResponseTime: 1.2,
-    sessionsToday: 1,
-  });
-
-  // Add state for model search
-  const [modelSearch, setModelSearch] = useState('');
-  const [showClearModal, setShowClearModal] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-
-  // Add pendingMessages state:
-  const [pendingMessages, setPendingMessages] = useState<Message[]>([]);
 
   // Persist selected model to localStorage
   useEffect(() => {
@@ -598,17 +702,10 @@ const HRAssistantPro: React.FC = () => {
     }
   };
 
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState('');
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
-  const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
-  const [editingSessionName, setEditingSessionName] = useState('');
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [newChatName, setNewChatName] = useState('');
   const [newChatRole, setNewChatRole] = useState('');
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [sessionToDelete, setSessionToDelete] = useState<number | null>(null);
   const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -635,16 +732,42 @@ const HRAssistantPro: React.FC = () => {
     if (activeSessionId) {
       getChatMessages(activeSessionId).then(data => {
         const msgs = data.results || data;
-        setMessages(msgs.map((m: any) => ({
-          id: m.id,
+        const convertedMessages = msgs.map((m: any) => ({
+          id: m.id.toString(),
           type: m.role === 'user' ? 'user' : m.role === 'assistant' ? 'bot' : 'system',
           content: m.content,
           timestamp: new Date(m.timestamp),
-          model: m.role === 'assistant' ? 'AI' : undefined,
-        })));
+          model: m.role === 'assistant' ? 'AI' : 'System',
+        }));
+        
+        // Add welcome message if no messages exist
+        if (convertedMessages.length === 0) {
+          convertedMessages.unshift({
+            id: '1',
+            type: 'system',
+            content: `👋 Welcome to HR Assistant Pro! How can I help you with HR today?`,
+            timestamp: new Date(),
+            confidence: 100,
+            model: 'System',
+          });
+        }
+        
+        setMessages(convertedMessages);
+      }).catch(error => {
+        console.error('Error loading messages:', error);
+        // Fallback to welcome message
+        setMessages([
+          {
+            id: '1',
+            type: 'system',
+            content: `👋 Welcome to HR Assistant Pro! How can I help you with HR today?`,
+            timestamp: new Date(),
+            confidence: 100,
+            model: 'System',
+          },
+        ]);
       });
     }
-    // eslint-disable-next-line
   }, [activeSessionId]);
 
   // Merge in pendingMessages after messages are fetched
@@ -664,14 +787,28 @@ const HRAssistantPro: React.FC = () => {
   }, [pendingMessages, activeSessionId]);
 
   const handleSelectSession = (id: number) => {
+    console.log('Selecting session:', id);
     setActiveSessionId(id);
+    // Clear any pending messages when switching sessions
+    setPendingMessages([]);
   };
 
   const handleNewChat = async () => {
     const session = await createChatSession({});
     setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)]); // Move new chat to top
     setActiveSessionId(session.id);
-    setMessages([]);
+    
+    // Clear current messages and start fresh
+    setMessages([
+      {
+        id: '1',
+        type: 'system',
+        content: `👋 Welcome to HR Assistant Pro! How can I help you with HR today?`,
+        timestamp: new Date(),
+        confidence: 100,
+        model: 'System',
+      },
+    ]);
   };
 
   const handleRenameSession = (id: number, currentName: string) => {
@@ -710,14 +847,60 @@ const HRAssistantPro: React.FC = () => {
 
   const confirmDeleteSession = async () => {
     if (sessionToDelete) {
-      await deleteChatSession(sessionToDelete);
-      setSessions(prev => prev.filter(s => s.id !== sessionToDelete));
-      if (activeSessionId === sessionToDelete) {
-        setActiveSessionId(null);
-        setMessages([]);
+      try {
+        console.log('Starting to delete session:', sessionToDelete);
+        
+        // Delete all messages in the session first
+        const messagesData = await getChatMessages(sessionToDelete);
+        const actualMessages = messagesData.results || messagesData;
+        console.log('Found messages to delete:', actualMessages.length);
+        
+        for (const message of actualMessages) {
+          console.log('Deleting message:', message.id);
+          await deleteChatMessage(message.id);
+        }
+        
+        // Then delete the session
+        console.log('Deleting session:', sessionToDelete);
+        await deleteChatSession(sessionToDelete);
+        
+        // Update local state
+        setSessions(prev => {
+          const filtered = prev.filter(s => s.id !== sessionToDelete);
+          console.log('Updated sessions list:', filtered.length);
+          return filtered;
+        });
+        
+        if (activeSessionId === sessionToDelete) {
+          console.log('Clearing active session');
+          setActiveSessionId(null);
+          setMessages([
+            {
+              id: '1',
+              type: 'system',
+              content: `👋 Welcome to HR Assistant Pro! How can I help you with HR today?`,
+              timestamp: new Date(),
+              confidence: 100,
+              model: 'System',
+            },
+          ]);
+        }
+        
+        setShowDeleteModal(false);
+        setSessionToDelete(null);
+        
+        toast({
+          title: 'Success',
+          description: 'Chat session deleted successfully.',
+        });
+      } catch (error) {
+        console.error('Error deleting session:', error);
+        toast({
+          title: 'Error',
+          description: `Failed to delete chat session: ${error.message}`,
+          variant: 'destructive'
+        });
       }
-      setShowDeleteModal(false);
-      setSessionToDelete(null);
     }
   };
 
@@ -743,12 +926,16 @@ const HRAssistantPro: React.FC = () => {
   const handleSendMessage = async (messageText?: string) => {
     let sessionId = activeSessionId;
     let isNewSession = false;
+    console.log('[DEBUG] handleSendMessage - initial activeSessionId:', activeSessionId);
     if (!sessionId) {
+      console.log('[DEBUG] Creating new session...');
       const session = await createChatSession({});
+      console.log('[DEBUG] Created session:', session);
       setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)]);
       setActiveSessionId(session.id);
       sessionId = session.id;
       isNewSession = true;
+      console.log('[DEBUG] Set sessionId to:', sessionId);
     }
     const tempId = 'pending-' + Date.now();
     const userMessage: Message = {
@@ -794,12 +981,28 @@ const HRAssistantPro: React.FC = () => {
         ...history,
       ];
       const modelToUse = sessionModel || selectedModel;
+      console.log('[DEBUG] Sending message with sessionId:', sessionId);
       const response = await sendMessage({
         model: modelToUse,
         messages: mcpMessages,
         prompt: customPrompt,
+        session_id: sessionId.toString(),
       }, undefined, undefined, { signal: abortControllerRef.current.signal });
       setIsTyping(false);
+
+      // Check if the response indicates cancellation
+      if (response.cancelled) {
+        const cancelledMessage: Message = {
+          id: `${Date.now()}_cancelled`,
+          type: 'system',
+          content: response.response || '⏹️ Task cancelled by user.',
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, cancelledMessage]);
+        setIsLoading(false);
+        setCancelRequested(false);
+        return;
+      }
 
       const botResponse: Message = {
         id: `${Date.now()}_bot`,
@@ -857,27 +1060,111 @@ const HRAssistantPro: React.FC = () => {
     }
   };
 
-  const handleStop = () => {
+  const checkTaskStatus = async (sessionId: string) => {
+    try {
+      const response = await fetch(`http://localhost:8001/chat/status/${sessionId}`);
+      const result = await response.json();
+      
+      if (result.success && result.is_running) {
+        // Show that a task is running
+        toast({
+          title: 'Task Running',
+          description: 'AI is currently processing your request. You can cancel anytime.',
+        });
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('Error checking task status:', error);
+      return null;
+    }
+  };
+
+  const handleStop = async () => {
+    console.log("[DEBUG] handleStop called");
     setCancelRequested(true);
+    
+    // Call the cancellation endpoint
+    try {
+      const sessionId = activeSessionId ? activeSessionId.toString() : 'default';
+      console.log("[DEBUG] Cancelling session:", sessionId);
+      
+      const response = await fetch(`http://localhost:8001/chat/cancel?session_id=${sessionId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      console.log("[DEBUG] Cancellation response status:", response.status);
+      const result = await response.json();
+      console.log("[DEBUG] Cancellation response:", result);
+      
+      if (result.success) {
+        toast({
+          title: 'Task Cancelled',
+          description: 'The AI processing has been stopped successfully.',
+        });
+      } else {
+        toast({
+          title: 'Cancellation Failed',
+          description: result.message || 'Could not cancel the task.',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('[DEBUG] Error cancelling task:', error);
+      toast({
+        title: 'Cancellation Error',
+        description: 'Failed to cancel the task. Please try again.',
+        variant: 'destructive',
+      });
+    }
+    
+    // Abort any ongoing requests
     if (abortControllerRef.current) {
+      console.log("[DEBUG] Aborting ongoing requests");
       abortControllerRef.current.abort();
     }
+    
     setIsTyping(false);
     setIsLoading(false);
+    setCancelRequested(false);
   };
 
   const handleClearChat = () => {
     setShowClearModal(true);
   };
 
-  const confirmClearChat = () => {
-    setMessages([]);
-    localStorage.removeItem('chatMessages');
+  const confirmClearChat = async () => {
+    if (activeSessionId) {
+      try {
+        // Get all messages for this session and delete them
+        const messagesData = await getChatMessages(activeSessionId);
+        const actualMessages = messagesData.results || messagesData;
+        for (const message of actualMessages) {
+          await deleteChatMessage(message.id);
+        }
+      } catch (error) {
+        console.error('Error clearing messages from database:', error);
+      }
+    }
+    
+    setMessages([
+      {
+        id: '1',
+        type: 'system',
+        content: `👋 Welcome to HR Assistant Pro! How can I help you with HR today?`,
+        timestamp: new Date(),
+        confidence: 100,
+        model: 'System',
+      },
+    ]);
     setShowClearModal(false);
-      toast({ 
-        title: 'Conversation Cleared', 
-        description: 'Started a new consultation session.' 
-      });
+    toast({ 
+      title: 'Conversation Cleared', 
+      description: 'Started a new consultation session.' 
+    });
   };
 
   const cancelClearChat = () => {
@@ -918,6 +1205,20 @@ const HRAssistantPro: React.FC = () => {
       setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, model: modelId } : s));
     }
   };
+
+  // Add state for modal
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
+
+  // When bot asks for bulk upload, show modal
+  useEffect(() => {
+    if (messages.some(m => typeof m.content === 'string' && m.content.toLowerCase().includes('bulk candidate upload'))) {
+      setShowBulkUpload(true);
+      setBulkModalSessionId(activeSessionId);
+    } else {
+      setShowBulkUpload(false);
+      setBulkModalSessionId(null);
+    }
+  }, [messages, activeSessionId]);
 
   return (
     <ErrorBoundary>
@@ -1000,9 +1301,174 @@ const HRAssistantPro: React.FC = () => {
               selectedModel={sessionModel}
               availableModels={models}
               onModelChange={handleInputBarModelChange}
+              onStop={handleStop}
+              onFileUpload={async (file) => {
+                try {
+                  setIsLoading(true);
+                  setIsTyping(true);
+                  setCancelRequested(false);
+
+                  // Add a system message to show file upload
+                  const uploadMessage = {
+                    id: `file-upload-${Date.now()}`,
+                    type: 'system' as const,
+                    content: `📎 Uploading file: ${file.name}`,
+                    timestamp: new Date(),
+                  };
+                  setMessages(prev => [...prev, uploadMessage]);
+
+                  // Upload file using existing service
+                  let response;
+                  const fileType = file.name.toLowerCase();
+                  
+                  if (fileType.endsWith('.csv') || fileType.endsWith('.xlsx') || fileType.endsWith('.xls')) {
+                    // Bulk upload for CSV/Excel files
+                    response = await uploadCandidatesFile(
+                      file, 
+                      activeSessionId?.toString() || 'chat-session', 
+                      user?.token
+                    );
+                  } else if (fileType.endsWith('.pdf') || fileType.endsWith('.doc') || fileType.endsWith('.docx') || fileType.endsWith('.txt')) {
+                    // Single file upload for resumes/documents
+                    response = await uploadSingleFile(
+                      file, 
+                      activeSessionId?.toString() || 'chat-session', 
+                      user?.token
+                    );
+                  } else {
+                    throw new Error('Unsupported file type. Please upload CSV, Excel, PDF, DOC, or TXT files.');
+                  }
+
+                  if (response.success) {
+                    // Update the upload message with success
+                    setMessages(prev => prev.map(msg => 
+                      msg.id === uploadMessage.id 
+                        ? { ...msg, content: `✅ File "${file.name}" uploaded and processed successfully.` }
+                        : msg
+                    ));
+
+                    // Create detailed AI message based on file type and extracted data
+                    const fileType = file.name.toLowerCase();
+                    let aiMessage = '';
+                    let extractedInfo = '';
+                    
+                    if (fileType.endsWith('.csv') || fileType.endsWith('.xlsx') || fileType.endsWith('.xls')) {
+                      if (response.extracted_data && response.extracted_data.candidate_fields) {
+                        const fields = response.extracted_data.candidate_fields;
+                        extractedInfo = `\n**Identified Fields:** ${Object.entries(fields).map(([key, value]) => `${key}: ${value}`).join(', ')}`;
+                      }
+                      
+                      // Add quality metrics if available
+                      if (response.extracted_data && response.extracted_data.quality_metrics) {
+                        const metrics = response.extracted_data.quality_metrics;
+                        extractedInfo += `\n**Data Quality:** ${metrics.data_quality_score}% (${metrics.mapped_fields}/${metrics.total_rows} fields mapped)`;
+                      }
+                      
+                      // Add validation results if available
+                      if (response.extracted_data && response.extracted_data.validation_results) {
+                        const validation = response.extracted_data.validation_results;
+                        if (validation.missing_required && validation.missing_required.length > 0) {
+                          extractedInfo += `\n**⚠️ Missing Required Fields:** ${validation.missing_required.join(', ')}`;
+                        }
+                        if (validation.data_issues && validation.data_issues.length > 0) {
+                          extractedInfo += `\n**⚠️ Data Issues:** ${validation.data_issues.join(', ')}`;
+                        }
+                        if (validation.suggestions && validation.suggestions.length > 0) {
+                          extractedInfo += `\n**💡 Suggestions:** ${validation.suggestions.join('; ')}`;
+                        }
+                      }
+                      
+                      aiMessage = `I've processed the candidate data from "${file.name}".${extractedInfo}
+
+**Available Actions:**
+- Add these candidates to the system
+- Analyze the data for insights
+- Check for duplicates
+- Export or modify the data
+- Map fields to system requirements`;
+                    } else if (fileType.endsWith('.pdf') || fileType.endsWith('.doc') || fileType.endsWith('.docx') || fileType.endsWith('.txt')) {
+                      if (response.extracted_data && response.extracted_data.candidate_info) {
+                        const info = response.extracted_data.candidate_info;
+                        extractedInfo = `\n**Extracted Information:**`;
+                        if (info.name) extractedInfo += `\n- Name: ${info.name}`;
+                        if (info.email) extractedInfo += `\n- Email: ${info.email}`;
+                        if (info.phone) extractedInfo += `\n- Phone: ${info.phone}`;
+                        if (info.experience) extractedInfo += `\n- Experience: ${info.experience} years`;
+                        if (info.skills) extractedInfo += `\n- Skills: ${info.skills}`;
+                      }
+                      aiMessage = `I've uploaded and processed the resume "${file.name}".${extractedInfo}
+
+**Available Actions:**
+- Add this candidate to the system
+- Extract more details from the resume
+- Analyze the resume content
+- Compare with existing candidates
+- Process the document for candidate details`;
+                    }
+
+                    if (aiMessage) {
+                      setMessages(prev => [...prev, {
+                        id: `ai-response-${Date.now()}`,
+                        type: 'bot',
+                        content: aiMessage,
+                        timestamp: new Date(),
+                      }]);
+                    }
+
+                    toast({ 
+                      title: 'File processed successfully', 
+                      description: `File "${file.name}" has been analyzed and is ready for use.`,
+                      variant: 'default'
+                    });
+                  } else {
+                    // Update the upload message with error
+                    setMessages(prev => prev.map(msg => 
+                      msg.id === uploadMessage.id 
+                        ? { ...msg, content: `❌ Failed to upload "${file.name}": ${response.message || 'Unknown error'}` }
+                        : msg
+                    ));
+                    
+                    toast({ 
+                      title: 'Upload failed', 
+                      description: response.message || 'Failed to upload file.',
+                      variant: 'destructive'
+                    });
+                  }
+                } catch (error: any) {
+                  console.error('File upload error:', error);
+                  
+                  setMessages(prev => [...prev, {
+                    id: `error-${Date.now()}`,
+                    type: 'error',
+                    content: `❌ Failed to upload "${file.name}": ${error.message || 'Unknown error'}`,
+                    timestamp: new Date(),
+                  }]);
+                  
+                  toast({ 
+                    title: 'Upload failed', 
+                    description: error.message || 'Failed to upload file.',
+                    variant: 'destructive'
+                  });
+                } finally {
+                  setIsLoading(false);
+                  setIsTyping(false);
+                }
+              }}
             />
             </div>
           </div>
+
+          {/* Bulk upload UI */}
+          <BulkUploadModal
+            open={showBulkUpload}
+            onClose={() => setShowBulkUpload(false)}
+            onSuccess={() => {
+              setShowBulkUpload(false);
+              toast({ title: 'Bulk upload complete', description: 'Candidates uploaded successfully.' });
+            }}
+            sessionId={bulkModalSessionId || activeSessionId}
+            authToken={user?.token}
+          />
 
           {/* Configuration Dialog */}
           <Dialog open={showConfig} onOpenChange={setShowConfig}>

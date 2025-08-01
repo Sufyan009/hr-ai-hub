@@ -1,0 +1,4 @@
+first_name,last_name,email,phone_number,job_title,candidate_stage,communication_skills,years_of_experience,expected_salary,current_salary,city,source,notes
+John,Doe,john.doe@example.com,555-0101,Software Engineer,Screening,Excellent,5,80000,75000,New York,LinkedIn,Experienced developer
+Jane,Smith,jane.smith@example.com,555-0102,Product Manager,Interview Scheduled,Good,7,95000,90000,San Francisco,Indeed,Strong leadership skills
+Mike,Johnson,mike.johnson@example.com,555-0103,Data Scientist,Offer Made,Excellent,4,85000,80000,Chicago,Referral,ML expert

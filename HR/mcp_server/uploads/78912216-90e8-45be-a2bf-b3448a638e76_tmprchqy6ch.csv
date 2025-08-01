@@ -1,0 +1,4 @@
+first_name,last_name,email,phone_number,job_title,candidate_stage,communication_skills,years_of_experience,expected_salary,current_salary,city,source,notes
+John,Doe,john.doe@example.com,+1-555-123-4567,Software Engineer,Screening,Excellent,5,80000,75000,New York,LinkedIn,Strong Python skills
+Jane,Smith,jane.smith@example.com,+1-555-987-6543,Product Manager,Interview,Good,3,90000,85000,San Francisco,Company Website,Experience with Agile
+Mike,Johnson,mike.johnson@example.com,+1-555-456-7890,UX Designer,Hired,Excellent,4,75000,70000,Chicago,Referral,Portfolio available

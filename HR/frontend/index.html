@@ -15,6 +15,30 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@lovable_dev" />
     <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+    
+    <script>
+      // Prevent conflicts with browser extensions and autofill scripts
+      window.addEventListener('error', function(e) {
+        if (e.filename && e.filename.includes('bootstrap-autofill-overlay')) {
+          e.preventDefault();
+          console.warn('Browser extension conflict detected and handled');
+        }
+      });
+      
+      // Protect against DOM manipulation conflicts
+      const originalInsertBefore = Node.prototype.insertBefore;
+      Node.prototype.insertBefore = function(newNode, referenceNode) {
+        try {
+          return originalInsertBefore.call(this, newNode, referenceNode);
+        } catch (error) {
+          if (error.name === 'NotFoundError') {
+            console.warn('DOM insertion conflict handled');
+            return null;
+          }
+          throw error;
+        }
+      };
+    </script>
   </head>
 
   <body>

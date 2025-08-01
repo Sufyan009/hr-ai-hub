@@ -1,0 +1,19 @@
+
+    RESUME - JOHN DOE
+    Email: john.doe@example.com
+    Phone: +1-555-123-4567
+    
+    EXPERIENCE:
+    Software Engineer at Tech Corp (2020-2023)
+    - Developed Python applications
+    - Led team of 5 developers
+    - Implemented CI/CD pipelines
+    
+    SKILLS:
+    - Python, JavaScript, React
+    - AWS, Docker, Kubernetes
+    - Agile methodologies
+    
+    EDUCATION:
+    BS Computer Science, University of Technology
+    

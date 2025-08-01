@@ -45,11 +45,23 @@ class CandidateSerializer(serializers.ModelSerializer):
     source_detail = SourceSerializer(source='source', read_only=True)
     communication_skills = serializers.PrimaryKeyRelatedField(queryset=CommunicationSkill.objects.all(), write_only=True)
     communication_skills_detail = CommunicationSkillSerializer(source='communication_skills', read_only=True)
+    
+    # Schema.org structured data fields
+    schema_org_data = serializers.SerializerMethodField()
+    schema_org_json = serializers.SerializerMethodField()
 
     class Meta:
         model = Candidate
         fields = '__all__'
-        read_only_fields = ['notes']
+        read_only_fields = ['notes', 'schema_org_data', 'schema_org_json']
+
+    def get_schema_org_data(self, obj):
+        """Return Schema.org structured data for the candidate"""
+        return obj.get_schema_org_data()
+
+    def get_schema_org_json(self, obj):
+        """Return Schema.org data as JSON string"""
+        return obj.get_schema_org_json()
 
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -60,9 +72,23 @@ class JobPostSerializer(serializers.ModelSerializer):
     job_title = serializers.PrimaryKeyRelatedField(queryset=JobTitle.objects.all(), allow_null=True, required=False)
     job_title_detail = JobTitleSerializer(source='job_title', read_only=True)
     posted_by_username = serializers.CharField(source='posted_by.username', read_only=True)
+    
+    # Schema.org structured data fields
+    schema_org_data = serializers.SerializerMethodField()
+    schema_org_json = serializers.SerializerMethodField()
+    
     class Meta:
         model = JobPost
         fields = '__all__'
+        read_only_fields = ['schema_org_data', 'schema_org_json']
+
+    def get_schema_org_data(self, obj):
+        """Return Schema.org structured data for the job posting"""
+        return obj.get_schema_org_data()
+
+    def get_schema_org_json(self, obj):
+        """Return Schema.org data as JSON string"""
+        return obj.get_schema_org_json()
 
 class ChatMessageSerializer(serializers.ModelSerializer):
     class Meta:

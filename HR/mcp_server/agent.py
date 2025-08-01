@@ -42,7 +42,8 @@ from tools import (
     format_candidate, format_candidate_list, add_candidate, add_note, list_notes, delete_note,
     list_job_titles, export_candidates_csv, get_recent_activities, get_overall_metrics,
     list_job_posts, add_job_post, update_job_post, delete_job_post, get_job_post_title_choices,
-    search_candidates, bulk_update_candidates, bulk_delete_candidates, get_job_post, format_job_post
+    search_candidates, bulk_update_candidates, bulk_delete_candidates, get_job_post, format_job_post,
+    bulk_add_candidates, get_schema_org_data, get_all_candidates, search_candidate_by_name, vector_search_candidates
 )
 
 
@@ -200,6 +201,9 @@ def get_langgraph_agent(model=None, auth_token=None, page=None):
     def get_candidate_metrics_tool(params=None):
         return get_candidate_metrics(params, auth_token=auth_token)
     def list_candidates_tool(page_arg=None):
+        # If no page specified, get all candidates
+        if page_arg is None:
+            return list_candidates(all_candidates=True, auth_token=auth_token)
         return list_candidates(page=page_arg or page or 1, auth_token=auth_token)
     def add_candidate_tool(data):
         return add_candidate(data, auth_token=auth_token)
@@ -209,15 +213,15 @@ def get_langgraph_agent(model=None, auth_token=None, page=None):
         return list_notes(candidate_id, auth_token=auth_token)
     def delete_note_tool(note_id):
         return delete_note(note_id, auth_token=auth_token)
-    def list_job_titles_tool():
+    def list_job_titles_tool(input_text=None):
         return list_job_titles(auth_token=auth_token)
-    def export_candidates_csv_tool():
+    def export_candidates_csv_tool(input_text=None):
         return export_candidates_csv(auth_token=auth_token)
-    def get_recent_activities_tool():
+    def get_recent_activities_tool(input_text=None):
         return get_recent_activities(auth_token=auth_token)
-    def get_overall_metrics_tool():
+    def get_overall_metrics_tool(input_text=None):
         return get_overall_metrics(auth_token=auth_token)
-    def list_job_posts_tool():
+    def list_job_posts_tool(input_text=None):
         return list_job_posts(auth_token=auth_token)
     def add_job_post_tool(data):
         return add_job_post(data, auth_token=auth_token)
@@ -225,7 +229,7 @@ def get_langgraph_agent(model=None, auth_token=None, page=None):
         return update_job_post(job_post_id, data, auth_token=auth_token)
     def delete_job_post_tool(job_post_id):
         return delete_job_post(job_post_id, auth_token=auth_token)
-    def get_job_post_title_choices_tool():
+    def get_job_post_title_choices_tool(input_text=None):
         return get_job_post_title_choices(auth_token=auth_token)
     def search_candidates_tool(filters):
         return search_candidates(filters, auth_token=auth_token)
@@ -235,6 +239,33 @@ def get_langgraph_agent(model=None, auth_token=None, page=None):
         return bulk_delete_candidates(ids, auth_token=auth_token)
     def get_job_post_tool(job_post_id):
         return get_job_post(job_post_id, auth_token=auth_token)
+    def bulk_add_candidates_tool(candidates):
+        return bulk_add_candidates(candidates, auth_token=auth_token)
+    def get_uploaded_file_data_tool(file_name=None):
+        """Get data from uploaded files in the current session"""
+        if not pending_actions or session_id not in pending_actions:
+            return {"success": False, "message": "No uploaded files found"}
+        
+        session_data = pending_actions[session_id]
+        if 'uploaded_files' not in session_data:
+            return {"success": False, "message": "No uploaded files found"}
+        
+        files = session_data['uploaded_files']
+        if file_name:
+            # Return specific file data
+            for file_info in files:
+                if file_info['original_name'] == file_name:
+                    return {"success": True, "file_data": file_info}
+            return {"success": False, "message": f"File '{file_name}' not found"}
+        else:
+            # Return all file data
+            return {"success": True, "files": files}
+    
+    def get_schema_org_data_tool(data_type='candidates', candidate_id=None, job_post_id=None):
+        return get_schema_org_data(data_type, candidate_id, job_post_id, auth_token=auth_token)
+    def get_all_candidates_tool(input_text=None):
+        """Get all candidates without pagination for comprehensive search"""
+        return get_all_candidates(auth_token=auth_token)
     
     tools = [
         Tool(name='get_candidate', func=get_candidate_tool, description='Get candidate details by ID'),
@@ -259,34 +290,16 @@ def get_langgraph_agent(model=None, auth_token=None, page=None):
         Tool(name='bulk_update_candidates', func=bulk_update_candidates_tool, description='Bulk update candidates'),
         Tool(name='bulk_delete_candidates', func=bulk_delete_candidates_tool, description='Bulk delete candidates'),
         Tool(name='get_job_post', func=get_job_post_tool, description='Get job post details by ID'),
+        Tool(name='bulk_add_candidates', func=bulk_add_candidates_tool, description='Add multiple candidates at once. Input: a list of candidate dicts with fields like first_name, last_name, email, etc.'),
+        Tool(name='get_uploaded_file_data', func=get_uploaded_file_data_tool, description='Get data from uploaded files in the current session. Use this to access candidate data from uploaded CSV/Excel files.'),
+        Tool(name='get_schema_org_data', func=get_schema_org_data_tool, description='Get Schema.org structured data for better AI understanding. Input: {"data_type": "candidates"|"job_posts", "candidate_id": int (optional), "job_post_id": int (optional)}'),
+        Tool(name='get_all_candidates', func=get_all_candidates_tool, description='Get all candidates without pagination for comprehensive search'),
     ]
     
-    def llm_node(state: AgentState):
-        try:
-            # Convert messages to LangChain message objects
-            lc_messages = convert_to_lc_messages(state.messages)
-            response = llm.invoke(lc_messages)
-            return AgentState(messages=state.messages + [response])
-        except Exception as e:
-            # Improved error handling: log and surface error details
-            print("Primary LLM failed:", str(e))
-            msg = str(e).lower()
-            if "rate limit" in msg or "429" in msg or "quota" in msg or "limit exceeded" in msg:
-                return AgentState(messages=state.messages + [{
-                    "role": "assistant",
-                    "content": "⚠️ Sorry, our AI service is temporarily unavailable due to usage limits. Please try again later or contact support if this issue persists."
-                }])
-            else:
-                # Return the actual error message for other issues
-                return AgentState(messages=state.messages + [{
-                    "role": "assistant",
-                    "content": f"Sorry, there was an error with the primary AI service: {str(e)}"
-                }])
-    
     # Use the regular agent instead of LangGraph for now since it has proper tool support
-    return get_agent(model, auth_token=auth_token, page=page)
+    return get_agent(model, auth_token=auth_token, page=page, pending_actions=None, session_id=None)
 
-def get_agent(model=None, auth_token=None, page=None):
+def get_agent(model=None, auth_token=None, page=None, pending_actions=None, session_id=None):
     llm = create_llm_instance(model)
     if not llm:
         # Fallback to OpenAI if Azure is not configured
@@ -303,9 +316,12 @@ def get_agent(model=None, auth_token=None, page=None):
         return delete_candidate(cid, auth_token=auth_token)
     def update_candidate_tool(args):
         return update_candidate(args[0], args[1], args[2], auth_token=auth_token)
-    def get_candidate_metrics_tool(params=None):
-        return get_candidate_metrics(params, auth_token=auth_token)
+    def get_candidate_metrics_tool(input_text=None):
+        return get_candidate_metrics(auth_token=auth_token)
     def list_candidates_tool(page_arg=None):
+        # If no page specified, get all candidates
+        if page_arg is None:
+            return list_candidates(all_candidates=True, auth_token=auth_token)
         return list_candidates(page=page_arg or page or 1, auth_token=auth_token)
     def add_candidate_tool(data):
         return add_candidate(data, auth_token=auth_token)
@@ -315,15 +331,15 @@ def get_agent(model=None, auth_token=None, page=None):
         return list_notes(candidate_id, auth_token=auth_token)
     def delete_note_tool(note_id):
         return delete_note(note_id, auth_token=auth_token)
-    def list_job_titles_tool():
+    def list_job_titles_tool(input_text=None):
         return list_job_titles(auth_token=auth_token)
-    def export_candidates_csv_tool():
+    def export_candidates_csv_tool(input_text=None):
         return export_candidates_csv(auth_token=auth_token)
-    def get_recent_activities_tool():
+    def get_recent_activities_tool(input_text=None):
         return get_recent_activities(auth_token=auth_token)
-    def get_overall_metrics_tool():
+    def get_overall_metrics_tool(input_text=None):
         return get_overall_metrics(auth_token=auth_token)
-    def list_job_posts_tool():
+    def list_job_posts_tool(input_text=None):
         return list_job_posts(auth_token=auth_token)
     def add_job_post_tool(data):
         return add_job_post(data, auth_token=auth_token)
@@ -331,7 +347,7 @@ def get_agent(model=None, auth_token=None, page=None):
         return update_job_post(job_post_id, data, auth_token=auth_token)
     def delete_job_post_tool(job_post_id):
         return delete_job_post(job_post_id, auth_token=auth_token)
-    def get_job_post_title_choices_tool():
+    def get_job_post_title_choices_tool(input_text=None):
         return get_job_post_title_choices(auth_token=auth_token)
     def search_candidates_tool(filters):
         return search_candidates(filters, auth_token=auth_token)
@@ -341,6 +357,106 @@ def get_agent(model=None, auth_token=None, page=None):
         return bulk_delete_candidates(ids, auth_token=auth_token)
     def get_job_post_tool(job_post_id):
         return get_job_post(job_post_id, auth_token=auth_token)
+    def bulk_add_candidates_tool(candidates):
+        """Add multiple candidates to the system"""
+        # If candidates is a string, try to parse it as JSON
+        if isinstance(candidates, str):
+            try:
+                import json
+                candidates = json.loads(candidates)
+            except:
+                return {"success": False, "message": "Invalid candidates data format"}
+        
+        # If candidates is not a list, try to get it from uploaded files
+        if not isinstance(candidates, list):
+            # Get uploaded file data
+            file_data = get_uploaded_file_data_tool()
+            if not file_data.get('success'):
+                return {"success": False, "message": "No uploaded file data found"}
+            
+            # Extract candidate data from the uploaded file
+            files = file_data.get('files', [])
+            if not files:
+                return {"success": False, "message": "No files found in session"}
+            
+            # Get the first file's data
+            file_info = files[0]
+            print(f"[DEBUG] File info keys: {list(file_info.keys())}")
+            print(f"[DEBUG] Has extracted_data: {'extracted_data' in file_info}")
+            
+            if 'extracted_data' not in file_info:
+                return {"success": False, "message": "No extracted data found in uploaded file"}
+            
+            extracted_data = file_info['extracted_data']
+            print(f"[DEBUG] Extracted data keys: {list(extracted_data.keys())}")
+            
+            if 'data' not in extracted_data:
+                return {"success": False, "message": "No candidate data found in extracted data"}
+            
+            candidates = extracted_data['data']
+            print(f"[DEBUG] Extracted {len(candidates)} candidates from uploaded file")
+            print(f"[DEBUG] First candidate: {candidates[0] if candidates else 'None'}")
+        
+        return bulk_add_candidates(candidates, auth_token=auth_token)
+    def get_uploaded_file_data_tool(file_name=None):
+        """Get data from uploaded files in the current session"""
+        print(f"[DEBUG] get_uploaded_file_data_tool called with file_name: {file_name}")
+        print(f"[DEBUG] session_id: {session_id}")
+        print(f"[DEBUG] pending_actions keys: {list(pending_actions.keys()) if pending_actions else 'None'}")
+        
+        if not pending_actions or session_id not in pending_actions:
+            print(f"[DEBUG] No pending_actions or session_id not found")
+            return {"success": False, "message": "No uploaded files found"}
+        
+        session_data = pending_actions[session_id]
+        print(f"[DEBUG] session_data keys: {list(session_data.keys())}")
+        
+        if 'uploaded_files' not in session_data:
+            print(f"[DEBUG] No uploaded_files in session_data")
+            return {"success": False, "message": "No uploaded files found"}
+        
+        files = session_data['uploaded_files']
+        print(f"[DEBUG] Found {len(files)} files in session")
+        
+        if file_name:
+            # Return specific file data
+            for file_info in files:
+                if file_info['original_name'] == file_name:
+                    print(f"[DEBUG] Found specific file: {file_name}")
+                    return {"success": True, "file_data": file_info}
+            print(f"[DEBUG] File '{file_name}' not found")
+            return {"success": False, "message": f"File '{file_name}' not found"}
+        else:
+            # Return all file data
+            print(f"[DEBUG] Returning all files data")
+            return {"success": True, "files": files}
+    
+    def get_schema_org_data_tool(input_text):
+        # Parse input to extract parameters
+        try:
+            if isinstance(input_text, str):
+                # Try to parse as JSON
+                import json
+                data = json.loads(input_text)
+            else:
+                data = input_text
+        except:
+            # Default to candidates if parsing fails
+            data = {"data_type": "candidates"}
+        
+        data_type = data.get("data_type", "candidates")
+        candidate_id = data.get("candidate_id")
+        job_post_id = data.get("job_post_id")
+        
+        return get_schema_org_data(data_type, candidate_id, job_post_id, auth_token=auth_token)
+    
+    def get_all_candidates_tool(input_text=None):
+        """Get all candidates without pagination for comprehensive search"""
+        return get_all_candidates(auth_token=auth_token)
+    
+    def vector_search_candidates_tool(query):
+        """Perform semantic vector search for candidates"""
+        return vector_search_candidates(query, auth_token=auth_token)
     
     tools = [
         Tool(name='get_candidate', func=get_candidate_tool, description='Get candidate details by ID'),
@@ -362,32 +478,64 @@ def get_agent(model=None, auth_token=None, page=None):
         Tool(name='delete_job_post', func=delete_job_post_tool, description='Delete a job post'),
         Tool(name='get_job_post_title_choices', func=get_job_post_title_choices_tool, description='Get job post title choices'),
         Tool(name='search_candidates', func=search_candidates_tool, description='Search candidates with filters'),
+        Tool(name='vector_search_candidates', func=vector_search_candidates_tool, description='Perform semantic vector search for candidates. Use this for natural language queries like "find candidates with Python skills" or "show me experienced developers"'),
         Tool(name='bulk_update_candidates', func=bulk_update_candidates_tool, description='Bulk update candidates'),
         Tool(name='bulk_delete_candidates', func=bulk_delete_candidates_tool, description='Bulk delete candidates'),
         Tool(name='get_job_post', func=get_job_post_tool, description='Get job post details by ID'),
+        Tool(name='bulk_add_candidates', func=bulk_add_candidates_tool, description='Add multiple candidates at once. Use this tool when you need to add several candidates in bulk.'),
+        Tool(name='get_uploaded_file_data', func=get_uploaded_file_data_tool, description='Get data from uploaded files in the current session. Use this to access candidate data from uploaded CSV/Excel files.'),
+        Tool(name='get_schema_org_data', func=get_schema_org_data_tool, description='Get Schema.org structured data for better AI understanding. Use this tool when you need structured data about candidates or job posts.'),
+        Tool(name='get_all_candidates', func=get_all_candidates_tool, description='Get all candidates without pagination for comprehensive search'),
     ]
     
-    # Use different agent types based on model
-    if model and model.startswith("azure/"):
-        # Azure models might not support function calling, use zero-shot agent
-        print(f"[DEBUG] Using zero-shot agent for Azure model: {model}")
-        return initialize_agent(
-            tools, llm, agent_type='zero-shot-react-description',
-            handle_parsing_errors=True,
-            max_iterations=5,
-            early_stopping_method="generate",
-            verbose=False,
-        )
-    else:
-        # Use function calling for OpenAI/OpenRouter models
-        print(f"[DEBUG] Using function calling agent for model: {model}")
-        return initialize_agent(
-            tools, llm, agent_type='openai-functions',
-            handle_parsing_errors=True,
-            max_iterations=5,
-            early_stopping_method="generate",
-            verbose=False,
-        )
+    # Always use function calling agent for better tool usage
+    print(f"[DEBUG] Using function calling agent for model: {model}")
+    
+    # Create a system prompt that forces tool usage
+    system_prompt = """You are HR Assistant Pro, an intelligent AI assistant for HR operations. 
+
+CRITICAL INSTRUCTIONS:
+1. You MUST use tools to perform actions. NEVER respond with just text explanations.
+2. For semantic/natural language searches, ALWAYS use vector_search_candidates tool first.
+3. For specific candidate lookups by ID, use get_candidate tool.
+4. For filtered searches, use search_candidates tool.
+5. When users say "add that data", "add these to the system", "add these data into system", "add these candidates to the system", or "add these to candidate data", you MUST:
+   - First use get_uploaded_file_data to get the file data
+   - Then use bulk_add_candidates to add the candidates
+   - Report the results
+   - NEVER respond with text explanations about data format or debugging
+
+SEARCH STRATEGY:
+- Natural language queries like "find candidates with Python skills" → use vector_search_candidates
+- Specific searches like "candidate ID 123" → use get_candidate
+- Filtered searches like "candidates in New York" → use search_candidates
+- List all candidates → use list_candidates
+
+BULK ADD STRATEGY:
+- When user wants to add uploaded file data → use get_uploaded_file_data THEN bulk_add_candidates
+- NEVER respond with text explanations for bulk add - ALWAYS use the tools
+- NEVER say "I need to review the data structure" or "debugging the data structure"
+- ALWAYS call the tools directly
+
+Available tools:
+- vector_search_candidates: For semantic/natural language candidate searches
+- get_candidate: Get specific candidate by ID
+- search_candidates: Filtered candidate search
+- list_candidates: List all candidates
+- get_uploaded_file_data: Gets data from uploaded CSV/Excel files
+- bulk_add_candidates: Adds multiple candidates from file data
+- add_candidate: Adds individual candidates
+
+Remember: ALWAYS use tools first, then provide results. Never just explain what you would do. For bulk add operations, ALWAYS use get_uploaded_file_data followed by bulk_add_candidates. NEVER respond with debugging text."""
+    
+    return initialize_agent(
+        tools, llm, agent_type='openai-functions',
+        handle_parsing_errors=True,
+        max_iterations=5,
+        early_stopping_method="generate",
+        verbose=False,
+        agent_kwargs={"system_message": system_prompt}
+    )
 
 def format_candidate(candidate):
     # Format a single candidate dict as markdown
@@ -466,34 +614,105 @@ def run_agent(messages: List[Dict[str, Any]], session_id=None, model=None, auth_
                 return "I understand you want to confirm, but I don't have a pending action to confirm. Could you please try your request again?"
         
         # Use agent for complex requests
-        agent = get_agent(model, auth_token=auth_token, page=page)
+        print(f"[DEBUG] Creating agent with session_id: {session_id}")
+        print(f"[DEBUG] pending_actions keys: {list(pending_actions.keys()) if pending_actions else 'None'}")
+        if pending_actions and session_id in pending_actions:
+            print(f"[DEBUG] session_data keys: {list(pending_actions[session_id].keys())}")
+        
+        agent = get_agent(model, auth_token=auth_token, page=page, pending_actions=pending_actions, session_id=session_id)
         print(f"[DEBUG] Agent created successfully")
         
-        result = agent.invoke({"input": last_message.get('content', '')})
-        print(f"[DEBUG] Agent invoke completed")
+        # Add context about uploaded files if available
+        input_text = last_message.get('content', '')
+        if pending_actions and session_id in pending_actions:
+            session_data = pending_actions[session_id]
+            if 'uploaded_files' in session_data and session_data['uploaded_files']:
+                files_info = []
+                for file_info in session_data['uploaded_files']:
+                    files_info.append(f"File: {file_info['original_name']}")
+                    if 'extracted_data' in file_info:
+                        extracted = file_info['extracted_data']
+                        if 'data' in extracted:
+                            files_info.append(f"  - Contains {len(extracted['data'])} candidate records")
+                        if 'candidate_info' in extracted:
+                            files_info.append(f"  - Extracted candidate info available")
+                
+                if files_info:
+                    input_text += f"\n\n**Available uploaded files:**\n" + "\n".join(files_info)
         
-        # Handle different response formats
-        if isinstance(result, dict):
-            if 'output' in result:
-                output = result['output']
-                # Check if agent stopped due to limits
-                if "Agent stopped due to iteration limit" in output or "time limit" in output:
+        try:
+            result = agent.invoke({"input": input_text})
+            print(f"[DEBUG] Agent invoke completed")
+            
+            # Handle different response formats
+            if isinstance(result, dict):
+                if 'output' in result:
+                    output = result['output']
+                    # Check if agent stopped due to limits
+                    if "Agent stopped due to iteration limit" in output or "time limit" in output:
+                        return "I'm having trouble processing that request. Could you please rephrase your question or try a simpler request?"
+                    return output
+                elif 'result' in result:
+                    return result['result']
+                else:
+                    return str(result)
+            elif hasattr(result, 'content'):
+                content = result.content
+                if "Agent stopped due to iteration limit" in content or "time limit" in content:
                     return "I'm having trouble processing that request. Could you please rephrase your question or try a simpler request?"
-                return output
-            elif 'result' in result:
-                return result['result']
+                return content
             else:
-                return str(result)
-        elif hasattr(result, 'content'):
-            content = result.content
-            if "Agent stopped due to iteration limit" in content or "time limit" in content:
-                return "I'm having trouble processing that request. Could you please rephrase your question or try a simpler request?"
-            return content
-        else:
-            result_str = str(result)
-            if "Agent stopped due to iteration limit" in result_str or "time limit" in result_str:
-                return "I'm having trouble processing that request. Could you please rephrase your question or try a simpler request?"
-            return result_str
+                result_str = str(result)
+                if "Agent stopped due to iteration limit" in result_str or "time limit" in result_str:
+                    return "I'm having trouble processing that request. Could you please rephrase your question or try a simpler request?"
+                return result_str
+        except Exception as agent_error:
+            print(f"[DEBUG] Agent failed, trying direct tool calls: {str(agent_error)}")
+            
+            # Fallback: Try direct tool calls for file operations
+            if any(keyword in input_text.lower() for keyword in ['add', 'upload', 'candidate', 'data']):
+                try:
+                    print(f"[DEBUG] Attempting direct tool calls for file operation")
+                    
+                    # Check if we have uploaded files in the session
+                    if not pending_actions or session_id not in pending_actions:
+                        return "❌ No uploaded files found in the current session."
+                    
+                    session_data = pending_actions[session_id]
+                    if 'uploaded_files' not in session_data:
+                        return "❌ No uploaded files found in the current session."
+                    
+                    files = session_data['uploaded_files']
+                    if not files:
+                        return "❌ No uploaded files found in the current session."
+                    
+                    print(f"[DEBUG] Found {len(files)} files")
+                    
+                    # Get the first file's data
+                    file_info = files[0]
+                    print(f"[DEBUG] Processing file: {file_info.get('original_name', 'Unknown')}")
+                    
+                    if 'extracted_data' in file_info and 'data' in file_info['extracted_data']:
+                        candidates_data = file_info['extracted_data']['data']
+                        print(f"[DEBUG] Found {len(candidates_data)} candidates to add")
+                        
+                        # Add candidates using bulk_add_candidates from tools module
+                        from tools import bulk_add_candidates
+                        result = bulk_add_candidates(candidates_data, auth_token=auth_token)
+                        print(f"[DEBUG] bulk_add_candidates result: {result}")
+                        
+                        if result.get('success'):
+                            return f"✅ Successfully added {len(candidates_data)} candidates to the system!"
+                        else:
+                            return f"❌ Failed to add candidates: {result.get('message', 'Unknown error')}"
+                    else:
+                        return "❌ No candidate data found in the uploaded file."
+                except Exception as tool_error:
+                    print(f"[DEBUG] Direct tool call failed: {str(tool_error)}")
+                    return f"❌ Error processing file data: {str(tool_error)}"
+            
+            # If not a file operation, re-raise the original error
+            raise agent_error
     except Exception as e:
         print(f"[DEBUG] Error in run_agent: {str(e)}")
         import traceback
@@ -501,7 +720,7 @@ def run_agent(messages: List[Dict[str, Any]], session_id=None, model=None, auth_
         
         # Return a friendly error message for parsing errors
         if "Could not parse LLM output" in str(e):
-            return "I understand your request, but I'm having trouble processing it right now. Could you please try rephrasing your question or ask something else?"
+            return "I'm trying to process your request but need to use the right tools. Let me try a different approach to add the candidates from your uploaded file."
         elif "Missing some input keys" in str(e):
             return "I'm having trouble understanding your request. Could you please try again?"
         elif 'rate limit' in str(e).lower() or '429' in str(e) or 'limit exceeded' in str(e):

@@ -16,7 +16,8 @@ import {
   SortDesc,
   User,
   Link2,
-  X
+  X,
+  Upload
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -43,6 +44,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useDebounce } from '@/hooks/useDebounce';
 import { DeleteConfirmationModal } from '@/components/DeleteConfirmationModal';
+import BulkUploadModal from '../components/BulkUploadModal';
 
 interface Candidate {
   id: number;
@@ -95,6 +97,9 @@ const CandidateList: React.FC = () => {
   const [filtersLoading, setFiltersLoading] = useState(true);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [candidateToDelete, setCandidateToDelete] = useState<Candidate | null>(null);
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const sessionId = 'candidate-list-session'; // Placeholder, ideally from context or props
+  const authToken = 'dummy-token'; // Placeholder, ideally from context or props
 
   const handlePendingFilterChange = (field: string, value: string) => {
     setPendingFilters(prev => ({ ...prev, [field]: value }));
@@ -272,6 +277,40 @@ const CandidateList: React.FC = () => {
     setCustomFilters(prev => prev.filter((_, i) => i !== idx));
   };
 
+  // Function to refresh candidate list (replace with your actual refresh logic)
+  const refreshCandidates = () => {
+    // This function will be called when bulk upload is successful to refresh the candidate list
+    // For now, we'll just re-fetch the current page data
+    setLoading(true);
+    const fetchCandidates = async () => {
+      try {
+        const params = new URLSearchParams();
+        params.append('page', String(page));
+        if (debouncedSearch) params.append('search', debouncedSearch);
+        customFilters.forEach(f => params.append(f.field, f.value));
+        params.append('ordering', getOrderingParam());
+        const res = await api.get(`/candidates/?${params.toString()}`);
+        setCandidates(res.data.results);
+        setCount(res.data.count);
+      } catch (err) {
+        setError('Failed to load candidates.');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchCandidates();
+  };
+
+  // Handle bulk upload success
+  const handleBulkSuccess = (summary) => {
+    refreshCandidates();
+    toast({
+      title: 'Bulk Upload Successful',
+      description: `Added: ${summary.total - summary.failedCount}, Errors: ${summary.failedCount}, Duplicates: ${summary.duplicates}`,
+    });
+    setShowBulkModal(false);
+  };
+
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-full py-10 bg-gray-50 dark:bg-gray-900 rounded-lg">
@@ -446,6 +485,12 @@ const CandidateList: React.FC = () => {
                 onClick={() => navigate('/candidates/new')}
         >
                 <Plus className="h-4 w-4" /> Add Candidate
+        </Button>
+        <Button 
+                className="h-10 px-4 text-sm font-semibold flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white"
+                onClick={() => setShowBulkModal(true)}
+        >
+                <Upload className="h-4 w-4" /> Bulk Upload
         </Button>
       </div>
           </div>
@@ -637,6 +682,13 @@ const CandidateList: React.FC = () => {
     isDeleting={deletingId === candidateToDelete.id}
   />
 )}
+      <BulkUploadModal
+        open={showBulkModal}
+        onClose={() => setShowBulkModal(false)}
+        onSuccess={handleBulkSuccess}
+        sessionId={sessionId}
+        authToken={authToken}
+      />
     </div>
   );
 };

@@ -1,6 +1,15 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import UserProfileView, CandidateViewSet, metrics_view, recent_activities_view, chat_view, openrouter_models_view, NotificationViewSet, UserSettingsView, export_candidates_csv, JobTitleViewSet, CityViewSet, SourceViewSet, CommunicationSkillViewSet, unread_notifications_view, JobPostViewSet, JobPostTitleChoices, PasswordResetRequestView, PasswordResetConfirmView, EmailVerificationRequestView, EmailVerificationConfirmView, candidate_metrics_view, ChatSessionViewSet, ChatMessageViewSet, NoteViewSet
+from .views import UserProfileView, CandidateViewSet, metrics_view, recent_activities_view, chat_view, openrouter_models_view, NotificationViewSet, UserSettingsView, export_candidates_csv, JobTitleViewSet, CityViewSet, SourceViewSet, CommunicationSkillViewSet, unread_notifications_view, JobPostViewSet, JobPostTitleChoices, PasswordResetRequestView, PasswordResetConfirmView, EmailVerificationRequestView, EmailVerificationConfirmView, candidate_metrics_view, ChatSessionViewSet, ChatMessageViewSet, NoteViewSet, schema_org_data_view, all_candidates_view, candidate_vector_search_view
+from .nlweb_views import nlweb_discover_agents, nlweb_query_agent, nlweb_agent_status, nlweb_broadcast_query, nlweb_orchestrate_workflow, nlweb_analytics_dashboard, nlweb_schema_enhanced
+from .nlweb_vector_views import nlweb_vector_discover_agents, nlweb_vector_query_agent, nlweb_vector_agent_status, nlweb_vector_search, nlweb_index_data, nlweb_vector_stats
+from .nlweb_advanced_views import (
+    nlweb_advanced_search,
+    nlweb_salary_search,
+    nlweb_location_search,
+    nlweb_search_suggestions,
+    nlweb_search_analytics
+)
 
 router = DefaultRouter()
 router.register(r'candidates', CandidateViewSet, basename='candidate')
@@ -16,6 +25,10 @@ router.register(r'notes', NoteViewSet)
 
 urlpatterns = [
     path('notifications/unread/', unread_notifications_view, name='unread-notifications'),
+    path('candidates/metrics/', candidate_metrics_view, name='candidate-metrics'),
+    path('candidates/all/', all_candidates_view, name='all-candidates'),
+    path('candidates/export/csv/', export_candidates_csv, name='export-candidates-csv'),
+    path('candidates/vector-search/', candidate_vector_search_view, name='candidate-vector-search'),
     path('', include(router.urls)),
     path('user-settings/', UserSettingsView.as_view(), name='user-settings'),
 ]
@@ -24,11 +37,34 @@ urlpatterns += [
     path('recent-activities/', recent_activities_view, name='recent-activities'),
     path('chat/', chat_view, name='chat'),
     path('openrouter-models/', openrouter_models_view, name='openrouter-models'),
-    path('candidates/export/csv/', export_candidates_csv, name='export-candidates-csv'),
-    path('candidates/metrics/', candidate_metrics_view, name='candidate-metrics'),
     path('jobposts/job-title-choices/', JobPostTitleChoices.as_view(), name='jobpost-title-choices'),
     path('password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('email-verification/', EmailVerificationRequestView.as_view(), name='email-verification'),
     path('verify-email/<uidb64>/<token>/', EmailVerificationConfirmView.as_view(), name='verify-email'),
+    path('schema-org-data/', schema_org_data_view, name='schema-org-data'),
+    
+    # Enhanced NLWeb endpoints
+    path('nlweb/discover/', nlweb_discover_agents, name='nlweb-discover-agents'),
+    path('nlweb/query/', nlweb_query_agent, name='nlweb-query-agent'),
+    path('nlweb/status/', nlweb_agent_status, name='nlweb-agent-status'),
+    path('nlweb/broadcast/', nlweb_broadcast_query, name='nlweb-broadcast-query'),
+    path('nlweb/orchestrate/', nlweb_orchestrate_workflow, name='nlweb-orchestrate-workflow'),
+    path('nlweb/analytics/', nlweb_analytics_dashboard, name='nlweb-analytics-dashboard'),
+    path('nlweb/schema-enhanced/', nlweb_schema_enhanced, name='nlweb-schema-enhanced'),
+    
+    # Enhanced NLWeb endpoints with vector search
+    path('nlweb/vector/discover/', nlweb_vector_discover_agents, name='nlweb-vector-discover-agents'),
+    path('nlweb/vector/query/', nlweb_vector_query_agent, name='nlweb-vector-query-agent'),
+    path('nlweb/vector/status/', nlweb_vector_agent_status, name='nlweb-vector-agent-status'),
+    path('nlweb/vector/search/', nlweb_vector_search, name='nlweb-vector-search'),
+    path('nlweb/vector/index/', nlweb_index_data, name='nlweb-index-data'),
+    path('nlweb/vector/stats/', nlweb_vector_stats, name='nlweb-vector-stats'),
+    
+    # Advanced NLWeb search endpoints
+    path('nlweb/advanced/search/', nlweb_advanced_search, name='nlweb-advanced-search'),
+    path('nlweb/salary/search/', nlweb_salary_search, name='nlweb-salary-search'),
+    path('nlweb/location/search/', nlweb_location_search, name='nlweb-location-search'),
+    path('nlweb/search/suggestions/', nlweb_search_suggestions, name='nlweb-search-suggestions'),
+    path('nlweb/search/analytics/', nlweb_search_analytics, name='nlweb-search-analytics'),
 ] 

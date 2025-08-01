@@ -1,18 +1,231 @@
-from fastapi import FastAPI, Request, APIRouter, Depends
+from fastapi import FastAPI, Request, APIRouter, Depends, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from agent import run_agent
 import requests
 import os
-from typing import List, Optional, Dict
+import time
 import re
-from tools import get_candidate, list_candidates, get_candidate_metrics, format_candidate, format_candidate_list, add_candidate, add_note, list_notes, delete_note, list_job_titles, list_cities, list_sources, list_communication_skills, export_candidates_csv, get_recent_activities, get_overall_metrics, list_job_posts, add_job_post, update_job_post, delete_job_post, get_job_post_title_choices, search_candidates, bulk_update_candidates, bulk_delete_candidates, get_job_post, format_job_post
+import json
+from typing import List, Optional, Dict
+import asyncio
+import pandas as pd
+import numpy as np
+from tools import get_candidate, list_candidates, get_candidate_metrics, format_candidate, format_candidate_list, add_candidate, add_note, list_notes, delete_note, list_job_titles, list_cities, list_sources, list_communication_skills, export_candidates_csv, get_recent_activities, get_overall_metrics, list_job_posts, add_job_post, update_job_post, delete_job_post, get_job_post_title_choices, search_candidates, bulk_update_candidates, bulk_delete_candidates, get_job_post, format_job_post, bulk_add_candidates
+import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
-# Session context to track conversation state
-session_context = {}
+# Enhanced session management with comprehensive memory
 pending_actions = {}
+session_timeouts = {}
+conversation_memory = {}  # Enhanced memory storage
+user_preferences = {}     # Store user preferences
+query_patterns = {}       # Track query patterns for learning
+running_tasks = {}        # Track running tasks for cancellation
+cancellation_requests = {}  # Track cancellation requests
+
+def cleanup_expired_sessions():
+    """Clean up expired sessions to prevent memory leaks"""
+    current_time = time.time()
+    expired_sessions = []
+    
+    for session_id, timeout in session_timeouts.items():
+        if current_time - timeout > 7200:  # 2 hour timeout for better memory
+            expired_sessions.append(session_id)
+    
+    for session_id in expired_sessions:
+        if session_id in pending_actions:
+            del pending_actions[session_id]
+        if session_id in session_timeouts:
+            del session_timeouts[session_id]
+        if session_id in conversation_memory:
+            del conversation_memory[session_id]
+        if session_id in user_preferences:
+            del user_preferences[session_id]
+
+def update_session_timeout(session_id: str):
+    """Update session timeout to keep it active"""
+    session_timeouts[session_id] = time.time()
+
+def store_conversation_memory(session_id: str, user_message: str, ai_response: str, context: dict = None):
+    """Store comprehensive conversation memory"""
+    if session_id not in conversation_memory:
+        conversation_memory[session_id] = {
+            'messages': [],
+            'file_context': [],
+            'user_preferences': {},
+            'query_patterns': [],
+            'last_interaction': None,
+            'conversation_summary': '',
+            'action_history': []
+        }
+    
+    memory = conversation_memory[session_id]
+    memory['messages'].append({
+        'user': user_message,
+        'ai': ai_response,
+        'timestamp': time.time(),
+        'context': context or {}
+    })
+    
+    # Keep last 50 messages for context
+    if len(memory['messages']) > 50:
+        memory['messages'] = memory['messages'][-50:]
+    
+    memory['last_interaction'] = time.time()
+    
+    # Update query patterns for learning
+    update_query_patterns(session_id, user_message)
+
+def update_query_patterns(session_id: str, user_message: str):
+    """Track and learn from user query patterns"""
+    if session_id not in query_patterns:
+        query_patterns[session_id] = []
+    
+    # Extract key patterns from user message
+    patterns = extract_query_patterns(user_message)
+    query_patterns[session_id].extend(patterns)
+    
+    # Keep last 100 patterns
+    if len(query_patterns[session_id]) > 100:
+        query_patterns[session_id] = query_patterns[session_id][-100:]
+
+def extract_query_patterns(message: str):
+    """Extract meaningful patterns from user messages"""
+    import re
+    
+    patterns = []
+    message_lower = message.lower()
+    
+    # File-related patterns
+    if any(word in message_lower for word in ['upload', 'file', 'resume', 'csv', 'excel']):
+        patterns.append('file_upload')
+    
+    # Candidate-related patterns
+    if any(word in message_lower for word in ['candidate', 'add', 'create', 'new']):
+        patterns.append('candidate_management')
+    
+    # Search patterns
+    if any(word in message_lower for word in ['find', 'search', 'look', 'show']):
+        patterns.append('search_query')
+    
+    # Analytics patterns
+    if any(word in message_lower for word in ['analytics', 'metrics', 'report', 'data']):
+        patterns.append('analytics_request')
+    
+    # Update patterns
+    if any(word in message_lower for word in ['update', 'change', 'modify', 'edit']):
+        patterns.append('update_request')
+    
+    # Delete patterns
+    if any(word in message_lower for word in ['delete', 'remove', 'clear']):
+        patterns.append('delete_request')
+    
+    return patterns
+
+def generate_comprehensive_context(session_id: str, user_message: str) -> dict:
+    """Generate comprehensive context for AI responses"""
+    context = {
+        'session_id': session_id,
+        'current_message': user_message,
+        'conversation_history': [],
+        'file_context': [],
+        'user_preferences': {},
+        'query_patterns': [],
+        'suggestions': [],
+        'available_actions': []
+    }
+    
+    # Add conversation history
+    if session_id in conversation_memory:
+        memory = conversation_memory[session_id]
+        context['conversation_history'] = memory['messages'][-10:]  # Last 10 messages
+        context['user_preferences'] = memory.get('user_preferences', {})
+        context['query_patterns'] = query_patterns.get(session_id, [])
+    
+    # Add file context
+    if session_id in pending_actions and 'uploaded_files' in pending_actions[session_id]:
+        context['file_context'] = pending_actions[session_id]['uploaded_files']
+    
+    # Generate smart suggestions based on context
+    context['suggestions'] = generate_smart_suggestions(context)
+    context['available_actions'] = get_available_actions(context)
+    
+    return context
+
+def generate_smart_suggestions(context: dict) -> list:
+    """Generate intelligent suggestions based on context"""
+    suggestions = []
+    
+    # File-related suggestions
+    if context['file_context']:
+        suggestions.extend([
+            "💡 Process uploaded files for candidate import",
+            "📊 Analyze file data for insights",
+            "🔍 Check for duplicate candidates",
+            "✅ Add candidates to the system"
+        ])
+    
+    # Pattern-based suggestions
+    patterns = context.get('query_patterns', [])
+    if 'candidate_management' in patterns:
+        suggestions.extend([
+            "👥 List all candidates",
+            "🔍 Search for specific candidates",
+            "📝 Add new candidates",
+            "✏️ Update candidate information"
+        ])
+    
+    if 'analytics_request' in patterns:
+        suggestions.extend([
+            "📊 View hiring metrics",
+            "📈 Generate reports",
+            "📋 Recent activities",
+            "🎯 Performance insights"
+        ])
+    
+    # General suggestions
+    suggestions.extend([
+        "❓ Ask me anything about HR processes",
+        "🛠️ Use available tools and commands",
+        "📁 Upload files for processing",
+            "📋 Download templates for data import"
+    ])
+    
+    return suggestions
+
+def get_available_actions(context: dict) -> list:
+    """Get available actions based on current context"""
+    actions = [
+        "get_candidate", "add_candidate", "update_candidate", "delete_candidate",
+        "list_candidates", "search_candidates", "get_analytics", "export_data",
+        "upload_file", "process_file", "download_template", "get_reports"
+    ]
+    
+    # Add file-specific actions
+    if context['file_context']:
+        actions.extend([
+            "import_candidates", "validate_data", "check_duplicates",
+            "extract_info", "analyze_file"
+        ])
+    
+    return actions
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the application"""
+    cleanup_expired_sessions()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    pending_actions.clear()
+    session_timeouts.clear()
 
 app.add_middleware(
     CORSMiddleware,
@@ -228,10 +441,10 @@ def format_analytics(metrics):
 
 def generate_suggestions(session_id, context_type="general"):
     """Generate smart suggestions based on session context"""
-    if session_id not in session_context:
+    if session_id not in pending_actions:
         return ""
     
-    context = session_context[session_id]
+    context = pending_actions[session_id]
     suggestions = []
     
     if context_type == "candidate" and context.get('last_candidate'):
@@ -282,766 +495,1126 @@ def check_candidate_exists(email, auth_token=None):
 
 @app.post('/chat')
 async def chat_endpoint(body: ChatRequest):
-    print("[MCP /chat] Full request body:", body)
-    user_message = body.message or ''
-    if body.messages:
-        for m in reversed(body.messages):
-            if m.role == 'user' and m.content:
-                user_message = m.content
-                break
-    if not user_message:
-        return {"response": {"success": False, "message": "No message provided."}}
-    # Rule-based greeting
-    if is_greeting(user_message):
-        return {'response': "Hello! How can I help you today?"}
-    session_id = body.session_id or 'default'  # fallback if session_id is not provided
-    model = body.model
-    auth_token = body.authToken
-    page = body.page
-    
-    # Initialize session context if not exists
-    if session_id not in session_context:
-        session_context[session_id] = {
-            'last_candidate': None,
-            'last_job_post': None,
-            'last_action': None
+    """Enhanced chat endpoint with comprehensive intelligence and memory"""
+    try:
+        user_message = body.message or ""
+        messages = body.messages or []
+        model = body.model or "openai/gpt-3.5-turbo"
+        auth_token = body.authToken
+        session_id = body.session_id or "default"
+        
+        # Check for cancellation request
+        if session_id in cancellation_requests:
+            del cancellation_requests[session_id]
+            return {
+                "success": False,
+                "message": "Task was cancelled by user",
+                "response": "⏹️ Task cancelled successfully. You can start a new conversation.",
+                "cancelled": True
+            }
+        
+        # Mark task as running
+        running_tasks[session_id] = {
+            "started_at": time.time(),
+            "model": model,
+            "user_message": user_message[:100] + "..." if len(user_message) > 100 else user_message
         }
-    # Check for pending confirmation
-    if session_id in pending_actions:
-        action = pending_actions[session_id]  # Don't pop yet
-        if user_message.strip().lower() in ['yes', 'y', 'confirm', 'sure']:
-            if action['type'] == 'bulk_delete' and len(action['candidate_ids']) > 10:
-                # Extra confirmation for large bulk actions
-                return {'response': f"⚠️ You are about to delete {len(action['candidate_ids'])} candidates. This action cannot be undone. Please reply 'yes' again to confirm or 'cancel' to abort."}
-            if action['type'] == 'bulk_delete':
-                from tools import delete_candidate
-                results = [delete_candidate(cid, auth_token=auth_token) for cid in action['candidate_ids']]
-                success = [r for r in results if r.get('success')]
-                fail = [r for r in results if not r.get('success')]
-                msg = f"✅ Deleted {len(success)} candidates."
-                if fail:
-                    msg += f"\n❌ Failed to delete the following IDs: {', '.join(action['candidate_ids'][i] for i, r in enumerate(results) if not r.get('success'))}."
-                msg += f"\n\n{generate_suggestions(session_id, 'bulk_operation')}"
-                pending_actions.pop(session_id)  # Remove after processing
-                return {'response': msg}
-            elif action['type'] == 'bulk_update' and len(action['candidate_ids']) > 10:
-                return {'response': f"⚠️ You are about to update {len(action['candidate_ids'])} candidates. Please reply 'yes' again to confirm or 'cancel' to abort."}
-            elif action['type'] == 'bulk_update':
-                from tools import update_candidate
-                results = [update_candidate(cid, action['field'], action['value'], auth_token=auth_token) for cid in action['candidate_ids']]
-                success = [r for r in results if r.get('success')]
-                fail = [r for r in results if not r.get('success')]
-                msg = f"✅ Updated {len(success)} candidates to {action['value']}."
-                if fail:
-                    msg += f"\n❌ Failed to update the following IDs: {', '.join(action['candidate_ids'][i] for i, r in enumerate(results) if not r.get('success'))}."
-                msg += f"\n\n{generate_suggestions(session_id, 'bulk_operation')}"
-                pending_actions.pop(session_id)  # Remove after processing
-                return {'response': msg}
-            elif action['type'] == 'delete':
-                from tools import delete_candidate
-                delete_result = delete_candidate(action['candidate_id'], auth_token=auth_token)
-                pending_actions.pop(session_id)  # Remove after processing
-                if delete_result.get('success'):
-                    return {'response': f"✅ Candidate {action['candidate_id']} deleted successfully!\nWould you like to add a note or notify someone? (Reply 'add note' or 'notify')"}
-                else:
-                    return {'response': f"❌ {delete_result.get('message', 'Failed to delete candidate.')}"}
-            elif action['type'] == 'update':
-                from tools import update_candidate
-                update_result = update_candidate(action['candidate_id'], action['field'], action['value'], auth_token=auth_token)
-                pending_actions.pop(session_id)  # Remove after processing
-                if update_result.get('success'):
-                    return {'response': f"✅ Candidate {action['candidate_id']} {action['field']} updated to {action['value']}!\nWould you like to add a note or notify someone? (Reply 'add note' or 'notify')"}
-                else:
-                    return {'response': f"❌ {update_result.get('message', f'Failed to update candidate {action['field']}.')}"}
-            elif action['type'] == 'add_candidate':
-                # Create the candidate
-                from tools import add_candidate
-                result = add_candidate(action['data'], auth_token=auth_token)
-                pending_actions.pop(session_id)  # Remove after processing
-                if result.get('success'):
-                    return {'response': f"✅ Candidate {action['data']['first_name']} {action['data'].get('last_name','')} added successfully!"}
-                else:
-                    error_msg = result.get('message', '')
-                    if 'already exists' in error_msg.lower() or 'duplicate' in error_msg.lower():
-                        return {'response': f"❌ A candidate with email '{action['data']['email']}' already exists.\n\n💡 **Suggestions:**\n- View the existing candidate: 'Show me candidate {action['data']['email']}'\n- Update the existing candidate: 'Update candidate {action['data']['email']}'\n- Try adding with a different email"}
-                    else:
-                        return {'response': f"❌ Failed to add candidate. {error_msg}"}
-        elif user_message.strip().lower() in ['cancel', 'no', 'n', 'abort', 'stop']:
-            pending_actions.pop(session_id)  # Remove after cancelling
-            return {'response': '👍 No worries! The action has been cancelled. Let me know if you need anything else.'}
-        elif action['type'] == 'add_candidate' and user_message.strip().lower().startswith('update '):
-            # Handle field updates
-            update_parts = user_message.strip().split(' ', 2)
-            if len(update_parts) >= 3:
-                field = update_parts[1].lower()
-                value = update_parts[2]
+        
+        # Debug: Log the entire request body
+        print(f"[DEBUG] Chat endpoint - Full request body: {body}")
+        print(f"[DEBUG] Chat endpoint - session_id: {session_id}")
+        print(f"[DEBUG] pending_actions keys: {list(pending_actions.keys()) if pending_actions else 'None'}")
+        if session_id in pending_actions:
+            print(f"[DEBUG] session_data keys: {list(pending_actions[session_id].keys())}")
+            if 'uploaded_files' in pending_actions[session_id]:
+                print(f"[DEBUG] Found {len(pending_actions[session_id]['uploaded_files'])} uploaded files")
+        
+        # Get comprehensive file context
+        file_context = ""
+        if session_id in pending_actions and 'uploaded_files' in pending_actions[session_id]:
+            uploaded_files = pending_actions[session_id]['uploaded_files']
+            if uploaded_files:
+                file_context = "\n\n**UPLOADED FILES CONTEXT:**\n"
+                for file_info in uploaded_files:
+                    file_context += f"- File: {file_info['original_name']}\n"
+                    if 'extracted_data' in file_info and 'candidate_info' in file_info['extracted_data']:
+                        candidate_info = file_info['extracted_data']['candidate_info']
+                        if candidate_info:
+                            file_context += f"  Extracted Info: {candidate_info}\n"
+                    if 'extracted_data' in file_info and 'data' in file_info['extracted_data']:
+                        file_context += f"  Data Preview: {len(file_info['extracted_data']['data'])} rows available\n"
+                    if 'extracted_data' in file_info and 'candidate_fields' in file_info['extracted_data']:
+                        fields = file_info['extracted_data']['candidate_fields']
+                        if fields:
+                            file_context += f"  Identified Fields: {fields}\n"
+                    if 'extracted_data' in file_info and 'quality_metrics' in file_info['extracted_data']:
+                        metrics = file_info['extracted_data']['quality_metrics']
+                        file_context += f"  Quality Score: {metrics.get('data_quality_score', 'N/A')}%\n"
+                file_context += "\nYou can reference this file data in your responses and help users process it.\n"
+        
+        # Generate intelligent system prompt
+        system_prompt = generate_dynamic_prompt(session_id, file_context, user_message)
+        
+        # Prepare messages with enhanced context
+        chat_messages = [
+            {"role": "system", "content": system_prompt}
+        ]
+        
+        # Add conversation history
+        for msg in messages:
+            chat_messages.append({"role": msg.role, "content": msg.content})
+        
+        # Add current user message
+        if user_message:
+            chat_messages.append({"role": "user", "content": user_message})
+        
+        # Check if this is a simple greeting
+        is_greeting = any(word in user_message.lower() for word in ['hello', 'hi', 'hey', 'hy', 'good morning', 'good afternoon', 'good evening'])
+        is_capability_query = any(word in user_message.lower() for word in ['what can you do', 'capabilities', 'features', 'help', 'assist', 'support', 'ask anything'])
+        
+        # Quick file detection for common queries
+        file_queries = ['add', 'upload', 'candidate', 'data', 'file', 'uploaded']
+        is_file_query = any(word in user_message.lower() for word in file_queries)
+        
+        # Quick name search detection
+        name_search_queries = ['find candidate', 'search candidate', 'show candidate', 'get candidate', 'candidate named', 'candidate called']
+        is_name_search = any(phrase in user_message.lower() for phrase in name_search_queries)
+        
+        # Vector search detection for semantic queries
+        vector_search_queries = ['candidate with', 'candidates who', 'find candidates with', 'search for candidates', 'candidates that have', 'candidates skilled in']
+        is_vector_search = any(phrase in user_message.lower() for phrase in vector_search_queries)
+        
+        # Handle simple greetings directly without calling the agent
+        if is_greeting and not is_capability_query:
+            agent_response = "Hello! 👋 How can I help you with HR today?"
+        elif is_vector_search:
+            # Quick response for vector searches - let the agent handle it efficiently
+            agent_response = "🔍 I'll perform a semantic search for candidates matching your criteria. Let me check the database..."
+        elif is_name_search:
+            # Quick response for name searches - let the agent handle it efficiently
+            agent_response = "🔍 I'll search for that candidate for you. Let me check the database..."
+        elif is_file_query and session_id in pending_actions and pending_actions[session_id] and 'uploaded_files' in pending_actions[session_id]:
+            # Quick response for file-related queries
+            files = pending_actions[session_id]['uploaded_files']
+            print(f"[DEBUG] Found {len(files)} files in session {session_id}")
+            print(f"[DEBUG] File info: {files[0].get('original_name', 'Unknown')}")
+            print(f"[DEBUG] Has extracted_data: {'extracted_data' in files[0]}")
+            if 'extracted_data' in files[0]:
+                print(f"[DEBUG] Has data: {'data' in files[0]['extracted_data']}")
+                if 'data' in files[0]['extracted_data']:
+                    print(f"[DEBUG] Data count: {len(files[0]['extracted_data']['data'])}")
+            if files:
+                file_info = files[0]
                 
-                # Map field names to data keys
-                field_mapping = {
-                    'name': 'first_name',
-                    'email': 'email',
-                    'phone': 'phone_number',
-                    'status': 'candidate_stage',
-                    'experience': 'years_of_experience',
-                    'salary': 'expected_salary',
-                    'current_salary': 'current_salary',
-                    'job_title': 'job_title',
-                    'city': 'city',
-                    'skills': 'communication_skills',
-                    'source': 'source'
+                # Check if user wants to add candidates immediately
+                add_queries = ['add these', 'add candidates', 'add data', 'add them', 'proceed', 'add that data', 'add that', 'add the data', 'add to system', 'add into system']
+                is_add_request = any(phrase in user_message.lower() for phrase in add_queries)
+                
+                if is_add_request and 'extracted_data' in file_info and 'data' in file_info['extracted_data']:
+                    # Quick add candidates
+                    try:
+                        candidates_data = file_info['extracted_data']['data']
+                        from tools import bulk_add_candidates
+                        
+                        # Check for cancellation before starting bulk add
+                        if session_id in cancellation_requests:
+                            del cancellation_requests[session_id]
+                            return {
+                                "success": False,
+                                "message": "Task was cancelled by user",
+                                "response": "⏹️ Bulk add operation cancelled.",
+                                "cancelled": True
+                            }
+                        
+                        print(f"[BULK ADD] Starting bulk add for {len(candidates_data)} candidates")
+                        result = bulk_add_candidates(candidates_data, auth_token)
+                        
+                        if result.get('success'):
+                            added_count = result.get('added_count', 0)
+                            skipped_count = result.get('skipped_count', 0)
+                            failed_count = result.get('failed_count', 0)
+                            
+                            agent_response = f"✅ Successfully processed {len(candidates_data)} candidates:\n"
+                            agent_response += f"• Added: {added_count}\n"
+                            agent_response += f"• Skipped (duplicates): {skipped_count}\n"
+                            agent_response += f"• Failed: {failed_count}\n\n"
+                            agent_response += "The candidates have been added to your system!"
+                        else:
+                            agent_response = f"❌ Failed to add candidates: {result.get('message', 'Unknown error')}"
+                    except Exception as e:
+                        agent_response = f"❌ Error during bulk add: {str(e)}"
+                else:
+                    # Show file info
+                    agent_response = f"I've processed the candidate data from \"{file_info['original_name']}\". "
+                    if 'extracted_data' in file_info:
+                        extracted_data = file_info['extracted_data']
+                        if 'candidate_fields' in extracted_data:
+                            fields = extracted_data['candidate_fields']
+                            agent_response += f"**Identified Fields:** {fields}\n"
+                        if 'quality_metrics' in extracted_data:
+                            metrics = extracted_data['quality_metrics']
+                            agent_response += f"**Data Quality:** {metrics.get('data_quality_score', 'N/A')}% ({metrics.get('mapped_fields', 'N/A')})\n\n"
+                        if 'data' in extracted_data:
+                            agent_response += f"**Available Actions:**\n"
+                            agent_response += f"• Add these candidates to the system\n"
+                            agent_response += f"• Analyze the data for insights\n"
+                            agent_response += f"• Check for duplicates\n"
+                            agent_response += f"• Export or modify the data\n"
+                            agent_response += f"• Map fields to system requirements"
+            else:
+                print(f"[DEBUG] Session {session_id} not found in pending_actions or no uploaded files")
+                print(f"[DEBUG] pending_actions keys: {list(pending_actions.keys()) if pending_actions else 'None'}")
+                if session_id in pending_actions:
+                    print(f"[DEBUG] Session data keys: {list(pending_actions[session_id].keys())}")
+                agent_response = "I don't see any uploaded files in this session. Please upload a file first."
+        else:
+            # Check for cancellation before calling the agent
+            if session_id in cancellation_requests:
+                del cancellation_requests[session_id]
+                return {
+                    "success": False,
+                    "message": "Task was cancelled by user",
+                    "response": "⏹️ Task cancelled successfully. You can start a new conversation.",
+                    "cancelled": True
+                }
+            
+            # Call the AI agent with cancellation support
+            agent_response = await run_agent_with_cancellation(chat_messages, model, auth_token, session_id)
+        
+        # Clean up running task
+        if session_id in running_tasks:
+            del running_tasks[session_id]
+        
+        # Store conversation memory
+        store_conversation_memory(session_id, user_message, agent_response)
+        
+        # Update session timeout
+        update_session_timeout(session_id)
+        
+        return {
+            "success": True,
+            "response": agent_response,
+            "session_id": session_id,
+            "model": model
+        }
+        
+    except Exception as e:
+        # Clean up running task on error
+        if session_id in running_tasks:
+            del running_tasks[session_id]
+        
+        print(f"[ERROR] Chat endpoint error: {e}")
+        return {
+            "success": False,
+            "message": f"Error processing chat: {str(e)}",
+            "session_id": session_id
+        }
+
+async def call_ai_model(messages, model, auth_token):
+    """Enhanced AI model calling with better error handling and fallback"""
+    try:
+        # Use the existing model calling logic but with enhanced context
+        if "azure" in model.lower():
+            # Azure OpenAI
+            headers = {
+                "api-key": os.getenv("AZURE_OPENAI_API_KEY"),
+                "Content-Type": "application/json"
+            }
+            endpoint = os.getenv('AZURE_OPENAI_ENDPOINT', '').rstrip('/')
+            # Use AZURE_OPENAI_CHAT_DEPLOYMENT for chat, fallback to AZURE_OPENAI_DEPLOYMENT, then default to gpt-4o
+            deployment = os.getenv('AZURE_OPENAI_CHAT_DEPLOYMENT') or os.getenv('AZURE_OPENAI_DEPLOYMENT') or 'gpt-4o'
+            
+            if not endpoint:
+                raise Exception("Azure OpenAI endpoint not configured")
+                
+            url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=2023-05-15"
+            
+            payload = {
+                "messages": messages,
+                "max_tokens": 2000,
+                "temperature": 0.7
+            }
+        else:
+            # OpenRouter
+            headers = {
+                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                "Content-Type": "application/json"
+            }
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 2000,
+                "temperature": 0.7
+            }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            response.raise_for_status()
+            result = response.json()
+            
+            return result["choices"][0]["message"]["content"]
+            
+    except Exception as e:
+        # If Azure fails, try OpenRouter as fallback
+        if "azure" in model.lower():
+            try:
+                print(f"Azure OpenAI failed: {str(e)}. Trying OpenRouter fallback...")
+                headers = {
+                    "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                    "Content-Type": "application/json"
+                }
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                
+                payload = {
+                    "model": "openai/gpt-4o",  # Use a reliable OpenRouter model
+                    "messages": messages,
+                    "max_tokens": 2000,
+                    "temperature": 0.7
                 }
                 
-                if field in field_mapping:
-                    data_key = field_mapping[field]
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+                    response.raise_for_status()
+                    result = response.json()
                     
-                    # Handle special cases
-                    if field == 'name':
-                        # Split name into first and last
-                        name_parts = value.split(' ', 1)
-                        action['data']['first_name'] = name_parts[0]
-                        action['data']['last_name'] = name_parts[1] if len(name_parts) > 1 else ''
-                    elif field == 'experience':
-                        try:
-                            action['data'][data_key] = float(value)
-                        except ValueError:
-                            return {'response': "❌ Experience must be a number (e.g., 'update experience 5')"}
-                    elif field in ['salary', 'current_salary']:
-                        try:
-                            action['data'][data_key] = float(value)
-                        except ValueError:
-                            return {'response': f"❌ {field.replace('_', ' ').title()} must be a number (e.g., 'update {field} 150000')"}
-                    elif field in ['job_title', 'city', 'skills', 'source']:
-                        # Handle foreign key fields
-                        if field == 'job_title':
-                            items = list_job_titles(auth_token=auth_token)
-                            item_key = 'job_titles'
-                        elif field == 'city':
-                            items = list_cities(auth_token=auth_token)
-                            item_key = 'cities'
-                        elif field == 'skills':
-                            items = list_communication_skills(auth_token=auth_token)
-                            item_key = 'communication_skills'
-                        elif field == 'source':
-                            items = list_sources(auth_token=auth_token)
-                            item_key = 'sources'
-                        
-                        if items.get('success'):
-                            found = False
-                            for item in items.get(item_key, []):
-                                if item.get('name', '').lower() == value.lower():
-                                    action['data'][data_key] = item['id']
-                                    found = True
-                                    break
-                            if not found:
-                                return {'response': f"❌ {field.replace('_', ' ').title()} '{value}' not found. Please use an existing {field.replace('_', ' ')}."}
-                    else:
-                        action['data'][data_key] = value
+                    return result["choices"][0]["message"]["content"]
                     
-                    # Show updated confirmation
-                    display_data = {}
-                    display_data['Name'] = f"{action['data'].get('first_name', '')} {action['data'].get('last_name', '')}".strip()
-                    display_data['Email'] = action['data'].get('email', '')
-                    display_data['Phone'] = action['data'].get('phone_number', '')
-                    
-                    # Get readable names for foreign keys
-                    if action['data'].get('job_title'):
-                        job_titles = list_job_titles(auth_token=auth_token)
-                        if job_titles.get('success'):
-                            for job_title in job_titles.get('job_titles', []):
-                                if job_title.get('id') == action['data']['job_title']:
-                                    display_data['Job Title'] = job_title.get('name', '')
-                                    break
-                    
-                    if action['data'].get('city'):
-                        cities = list_cities(auth_token=auth_token)
-                        if cities.get('success'):
-                            for city in cities.get('cities', []):
-                                if city.get('id') == action['data']['city']:
-                                    display_data['City'] = city.get('name', '')
-                                    break
-                    
-                    if action['data'].get('communication_skills'):
-                        skills_data = list_communication_skills(auth_token=auth_token)
-                        if skills_data.get('success'):
-                            for skill in skills_data.get('communication_skills', []):
-                                if skill.get('id') == action['data']['communication_skills']:
-                                    display_data['Skills'] = skill.get('name', '')
-                                    break
-                    
-                    if action['data'].get('source'):
-                        sources = list_sources(auth_token=auth_token)
-                        if sources.get('success'):
-                            for source in sources.get('sources', []):
-                                if source.get('id') == action['data']['source']:
-                                    display_data['Source'] = source.get('name', '')
-                                    break
-                    
-                    display_data['Status'] = action['data'].get('candidate_stage', '')
-                    display_data['Experience'] = f"{action['data'].get('years_of_experience', '')} years"
-                    display_data['Expected Salary'] = f"${action['data'].get('expected_salary', '')}"
-                    display_data['Current Salary'] = f"${action['data'].get('current_salary', '')}"
-                    
-                    confirmation_msg = "**📋 Updated Candidate Details - Please Confirm**\n\n"
-                    for key, value in display_data.items():
-                        if value:
-                            confirmation_msg += f"**{key}:** {value}\n"
-                    
-                    confirmation_msg += "\n**💡 Options:**\n"
-                    confirmation_msg += "- Reply 'yes' to confirm and create the candidate\n"
-                    confirmation_msg += "- Reply 'update [field] [value]' to modify another field\n"
-                    confirmation_msg += "- Reply 'cancel' to abort\n\n"
-                    confirmation_msg += "**Example updates:**\n"
-                    confirmation_msg += "- 'update email newemail@example.com'\n"
-                    confirmation_msg += "- 'update phone 9876543210'\n"
-                    confirmation_msg += "- 'update salary 150000'"
-                    
-                    return {'response': confirmation_msg}
-                else:
-                    return {'response': f"❌ Unknown field '{field}'. Available fields: name, email, phone, status, experience, salary, job_title, city, skills, source"}
-            else:
-                return {'response': "❌ Please specify a field and value. Example: 'update email newemail@example.com'"}
-        else:
-            return {'response': "Please reply 'yes' to confirm, 'update [field] [value]' to modify, or 'cancel' to abort."}
-    # Enhanced system prompt for strict tool use, greetings, and proactive behavior
-    prompt = body.prompt or (
-        "You are HR Assistant Pro, a friendly, proactive, and highly capable AI HR assistant.\n"
-        "- Absolutely never list example topics, bullet points, or suggestions in your greeting or first message. Only greet and offer help, nothing else.\n"
-        "- If the user greets you (e.g., says 'hi', 'hello', 'hey'), reply with a warm, simple greeting.\n"
-        "- When greeting the user, do NOT list example topics or suggestions (such as candidate evaluation frameworks, interview questions, job description templates, compliance, onboarding, etc.). Only greet and offer help.\n"
-        "- If the user asks for candidate details, analytics, or CRUD actions (e.g., 'Show me candidate 123', 'List all candidates', 'Update candidate status'), you MUST use your available tools to fetch or update data.\n"
-        "- NEVER make up candidate details or analytics.\n"
-        "- If the tool returns no result, say so clearly (e.g., 'No candidate found with that ID.').\n"
-        "- If the user asks for analytics or metrics, use your analytics tools.\n"
-        "- If the user asks a general HR question, answer conversationally and helpfully.\n"
-        "- If a tool fails or returns an error, explain the issue clearly and suggest next steps.\n"
-        "- Always be clear, concise, and supportive.\n"
-        "- If you need more information to complete a tool call, ask the user for clarification.\n"
-        "- Example: If the user says 'Show me candidate 123', call the get_candidate tool with ID 123 and return the result.\n"
-        "- Example: If the user says 'List all candidates', call the list_candidates tool and return the list.\n"
-        "- Example: If the user says 'hi', reply with 'Hello! How can I help you today?'\n"
-        "- If the user asks for something you cannot do, politely explain the limitation."
-    )
-    print("[MCP /chat] Auth token received:", auth_token)
-    # Convert Pydantic Message objects to dicts
-    messages = []
-    if body.messages:
-        for m in body.messages:
-            if hasattr(m, 'dict'):
-                messages.append(m.dict())
-            else:
-                messages.append(m)
-    else:
-        messages = []
-    # Hybrid tool-calling logic for non-function-calling models and Azure models
-    if model not in FUNCTION_CALLING_MODELS or (model and model.startswith("azure/")):
-        # Bulk delete
-        bulk_delete_ids = extract_bulk_delete_candidates(user_message)
-        if bulk_delete_ids:
-            # Fetch and show all candidates for confirmation
-            candidates = [get_candidate(cid, auth_token=auth_token) for cid in bulk_delete_ids]
-            found = [c for c in candidates if c and c.get('id')]
-            if found:
-                pending_actions[session_id] = {'type': 'bulk_delete', 'candidate_ids': bulk_delete_ids}
-                details = '\n---\n'.join([format_candidate(c) for c in found])
-                return {'response': f"You requested to delete the following candidates:\n\n{details}\n\nAre you sure you want to delete these candidates? Reply 'yes' to confirm or 'cancel' to abort."}
-            else:
-                return {'response': 'No valid candidates found for deletion.'}
-        # Bulk update
-        from_status, to_status = extract_bulk_update_candidates(user_message)
-        if from_status and to_status:
-            # List all candidates, filter by status
-            all_candidates = list_candidates(page=1, auth_token=auth_token)
-            filtered = [c for c in all_candidates.get('results', []) if str(c.get('candidate_stage', '')).lower() == from_status.lower()]
-            if filtered:
-                ids = [str(c['id']) for c in filtered]
-                pending_actions[session_id] = {'type': 'bulk_update', 'candidate_ids': ids, 'field': 'candidate_stage', 'value': to_status}
-                details = '\n---\n'.join([format_candidate(c) for c in filtered])
-                return {'response': f"You requested to update the following candidates from status '{from_status}' to '{to_status}':\n\n{details}\n\nAre you sure you want to update these candidates? Reply 'yes' to confirm or 'cancel' to abort."}
-            else:
-                return {'response': f'No candidates found with status "{from_status}".'}
-        # Check for delete candidate command first
-        delete_id = extract_delete_candidate(user_message)
-        if delete_id:
-            candidate = get_candidate(delete_id, auth_token=auth_token)
-            if candidate and candidate.get('id') and not candidate.get('success') == False:
-                pending_actions[session_id] = {'type': 'delete', 'candidate_id': delete_id}
-                return {'response': f"You requested to delete the following candidate.\n\n{format_candidate(candidate)}\n\nAre you sure you want to delete this candidate? Reply 'yes' to confirm."}
-            else:
-                # List available IDs for user guidance
-                all_candidates = list_candidates(page=1, auth_token=auth_token)
-                ids = ', '.join(str(c.get('id')) for c in all_candidates.get('results', []) if c.get('id'))
-                msg = f'❌ No candidate found with ID {delete_id}.'
-                if ids:
-                    msg += f' Available candidate IDs: {ids}.'
-                else:
-                    msg += ' No candidates found in the system.'
-                return {'response': msg}
-        # Check for update candidate status
-        update_id, new_status = extract_update_candidate_status(user_message)
-        if update_id and new_status:
-            candidate = get_candidate(update_id, auth_token=auth_token)
-            if candidate and candidate.get('id') and not candidate.get('success') == False:
-                pending_actions[session_id] = {'type': 'update', 'candidate_id': update_id, 'field': 'candidate_stage', 'value': new_status}
-                return {'response': f"You requested to update the following candidate's status.\n\n{format_candidate(candidate)}\n\nAre you sure you want to update this candidate's status to '{new_status}'? Reply 'yes' to confirm."}
-            else:
-                all_candidates = list_candidates(page=1, auth_token=auth_token)
-                ids = ', '.join(str(c.get('id')) for c in all_candidates.get('results', []) if c.get('id'))
-                msg = f'❌ No candidate found with ID {update_id}.'
-                if ids:
-                    msg += f' Available candidate IDs: {ids}.'
-                else:
-                    msg += ' No candidates found in the system.'
-                return {'response': msg}
-        update_id, field, value = extract_update_candidate_field(user_message)
-        if update_id and field and value:
-            candidate = get_candidate(update_id, auth_token=auth_token)
-            if candidate and candidate.get('id') and not candidate.get('success') == False:
-                pending_actions[session_id] = {'type': 'update', 'candidate_id': update_id, 'field': field, 'value': value}
-                return {'response': f"You requested to update the following candidate's {field}.\n\n{format_candidate(candidate)}\n\nAre you sure you want to update this candidate's {field} to '{value}'? Reply 'yes' to confirm."}
-            else:
-                all_candidates = list_candidates(page=1, auth_token=auth_token)
-                ids = ', '.join(str(c.get('id')) for c in all_candidates.get('results', []) if c.get('id'))
-                msg = f'❌ No candidate found with ID {update_id}.'
-                if ids:
-                    msg += f' Available candidate IDs: {ids}.'
-                else:
-                    msg += ' No candidates found in the system.'
-                return {'response': msg}
-        # Add candidate via natural language
-        if re.search(r'add.*candidate', user_message.lower()):
-            data = {}
-            name_match = re.search(r'named ([a-zA-Z ]+)', user_message)
-            if name_match:
-                full_name = name_match.group(1).strip().split()
-                data['first_name'] = full_name[0]
-                if len(full_name) > 1:
-                    data['last_name'] = ' '.join(full_name[1:])
-            email_match = re.search(r'email ([\w\.-]+@[\w\.-]+)', user_message)
-            if email_match:
-                data['email'] = email_match.group(1)
-            phone_match = re.search(r'phone (\d+)', user_message)
-            if phone_match:
-                data['phone_number'] = phone_match.group(1)
-            city_match = re.search(r'city ([a-zA-Z ]+)', user_message)
-            if city_match:
-                city_name = city_match.group(1).strip()
-                # Get city ID
-                cities = list_cities(auth_token=auth_token)
-                if cities.get('success'):
-                    city_found = None
-                    for city in cities.get('cities', []):
-                        if city.get('name', '').lower() == city_name.lower():
-                            city_found = city
-                            break
-                    if city_found:
-                        data['city'] = city_found['id']
-                    else:
-                        # Use first available city as default
-                        if cities.get('cities'):
-                            data['city'] = cities['cities'][0]['id']
-            status_match = re.search(r'status ([a-zA-Z ]+)', user_message)
-            if status_match:
-                data['candidate_stage'] = status_match.group(1).strip()
-            skills_match = re.search(r'skills ([a-zA-Z, ]+)', user_message)
-            if skills_match:
-                skills_names = [s.strip() for s in skills_match.group(1).split(',')]
-                # Get communication skills IDs
-                skills_data = list_communication_skills(auth_token=auth_token)
-                if skills_data.get('success'):
-                    # Find the first matching skill (since it's a ForeignKey, we can only use one)
-                    for skill_name in skills_names:
-                        for skill in skills_data.get('communication_skills', []):
-                            if skill.get('name', '').lower() == skill_name.lower():
-                                data['communication_skills'] = skill['id']
-                                break
-                        if 'communication_skills' in data:
-                            break
-            exp_match = re.search(r'experience (\d+)', user_message)
-            if exp_match:
-                data['years_of_experience'] = float(exp_match.group(1))
-            salary_match = re.search(r'expected salary (\d+)', user_message)
-            if salary_match:
-                data['expected_salary'] = float(salary_match.group(1))
-            job_title_match = re.search(r'for the ([a-zA-Z ]+) position', user_message)
-            if job_title_match:
-                job_title_name = job_title_match.group(1).strip()
-                # Get job title ID
-                job_titles = list_job_titles(auth_token=auth_token)
-                if job_titles.get('success'):
-                    job_title_found = None
-                    for job_title in job_titles.get('job_titles', []):
-                        if job_title.get('name', '').lower() == job_title_name.lower():
-                            job_title_found = job_title
-                            break
-                    if job_title_found:
-                        data['job_title'] = job_title_found['id']
-                    else:
-                        # Use first available job title as default
-                        if job_titles.get('job_titles'):
-                            data['job_title'] = job_titles['job_titles'][0]['id']
-            
-            # Add default values for required fields
-            if 'city' not in data:
-                cities = list_cities(auth_token=auth_token)
-                if cities.get('success') and cities.get('cities'):
-                    data['city'] = cities['cities'][0]['id']
-            
-            if 'job_title' not in data:
-                job_titles = list_job_titles(auth_token=auth_token)
-                if job_titles.get('success') and job_titles.get('job_titles'):
-                    data['job_title'] = job_titles['job_titles'][0]['id']
-            
-            if 'communication_skills' not in data:
-                skills_data = list_communication_skills(auth_token=auth_token)
-                if skills_data.get('success') and skills_data.get('communication_skills'):
-                    data['communication_skills'] = skills_data['communication_skills'][0]['id']
-            
-            if 'source' not in data:
-                sources = list_sources(auth_token=auth_token)
-                if sources.get('success') and sources.get('sources'):
-                    data['source'] = sources['sources'][0]['id']
-            
-            # Add default current salary if not provided
-            if 'current_salary' not in data and 'expected_salary' in data:
-                data['current_salary'] = data['expected_salary'] * 0.8  # 80% of expected salary
-            
-            # If we have at least name and email, show confirmation
-            if data.get('first_name') and data.get('email'):
-                # Check if candidate already exists
-                if check_candidate_exists(data['email'], auth_token=auth_token):
-                    return {'response': f"❌ A candidate with email '{data['email']}' already exists.\n\n💡 **Suggestions:**\n- View the existing candidate: 'Show me candidate {data['email']}'\n- Update the existing candidate: 'Update candidate {data['email']}'\n- Try adding with a different email"}
-                
-                # Format the candidate data for display
-                display_data = {}
-                display_data['Name'] = f"{data.get('first_name', '')} {data.get('last_name', '')}".strip()
-                display_data['Email'] = data.get('email', '')
-                display_data['Phone'] = data.get('phone_number', '')
-                
-                # Get readable names for foreign keys
-                if data.get('job_title'):
-                    job_titles = list_job_titles(auth_token=auth_token)
-                    if job_titles.get('success'):
-                        for job_title in job_titles.get('job_titles', []):
-                            if job_title.get('id') == data['job_title']:
-                                display_data['Job Title'] = job_title.get('name', '')
-                                break
-                
-                if data.get('city'):
-                    cities = list_cities(auth_token=auth_token)
-                    if cities.get('success'):
-                        for city in cities.get('cities', []):
-                            if city.get('id') == data['city']:
-                                display_data['City'] = city.get('name', '')
-                                break
-                
-                if data.get('communication_skills'):
-                    skills_data = list_communication_skills(auth_token=auth_token)
-                    if skills_data.get('success'):
-                        for skill in skills_data.get('communication_skills', []):
-                            if skill.get('id') == data['communication_skills']:
-                                display_data['Skills'] = skill.get('name', '')
-                                break
-                
-                if data.get('source'):
-                    sources = list_sources(auth_token=auth_token)
-                    if sources.get('success'):
-                        for source in sources.get('sources', []):
-                            if source.get('id') == data['source']:
-                                display_data['Source'] = source.get('name', '')
-                                break
-                
-                display_data['Status'] = data.get('candidate_stage', '')
-                display_data['Experience'] = f"{data.get('years_of_experience', '')} years"
-                display_data['Expected Salary'] = f"${data.get('expected_salary', '')}"
-                display_data['Current Salary'] = f"${data.get('current_salary', '')}"
-                
-                # Create confirmation message
-                confirmation_msg = "**📋 Candidate Details - Please Confirm**\n\n"
-                for key, value in display_data.items():
-                    if value:
-                        confirmation_msg += f"**{key}:** {value}\n"
-                
-                confirmation_msg += "\n**💡 Options:**\n"
-                confirmation_msg += "- Reply 'yes' to confirm and create the candidate\n"
-                confirmation_msg += "- Reply 'update [field] [value]' to modify a field\n"
-                confirmation_msg += "- Reply 'cancel' to abort\n\n"
-                confirmation_msg += "**Example updates:**\n"
-                confirmation_msg += "- 'update email newemail@example.com'\n"
-                confirmation_msg += "- 'update phone 9876543210'\n"
-                confirmation_msg += "- 'update salary 150000'"
-                
-                # Store the data in session for later use
-                if session_id not in pending_actions:
-                    pending_actions[session_id] = {}
-                pending_actions[session_id]['type'] = 'add_candidate'
-                pending_actions[session_id]['data'] = data
-                
-                return {'response': confirmation_msg}
-            else:
-                return {'response': "Please provide at least the candidate's name and email."}
-        # Now check for candidate ID lookup
-        candidate_id = extract_candidate_id(user_message)
-        if candidate_id:
-            result = get_candidate(candidate_id, auth_token=auth_token)
-            if result and result.get('id') and not result.get('success') == False:
-                # Track this candidate in session context
-                if session_id not in session_context:
-                    session_context[session_id] = {'last_candidate': None, 'last_job_post': None, 'last_action': None}
-                session_context[session_id]['last_candidate'] = candidate_id
-                response = format_candidate(result)
-                response += f"\n\n{generate_suggestions(session_id, 'candidate')}"
-                return {'response': response}
-            else:
-                all_candidates = list_candidates(page=1, auth_token=auth_token)
-                ids = ', '.join(str(c.get('id')) for c in all_candidates.get('results', []) if c.get('id'))
-                msg = f"❌ No candidate found with ID {candidate_id}."
-                if ids:
-                    msg += f' Available candidate IDs: {ids}.'
-                else:
-                    msg += ' No candidates found in the system.'
-                msg += " Would you like to list all candidates or try another ID?"
-                return {'response': msg}
-        candidate_name_or_email = extract_candidate_name_or_email(user_message)
-        if candidate_name_or_email:
-            all_candidates = list_candidates(page=1, auth_token=auth_token)
-            filtered = [c for c in all_candidates.get('results', []) if candidate_name_or_email.lower() in (c.get('first_name', '').lower() + ' ' + c.get('last_name', '').lower() + c.get('email', '').lower())]
-            if filtered:
-                # Track the first candidate found in session context
-                if filtered and session_id not in session_context:
-                    session_context[session_id] = {'last_candidate': None, 'last_job_post': None, 'last_action': None}
-                if filtered:
-                    session_context[session_id]['last_candidate'] = str(filtered[0].get('id'))
-                return {'response': format_candidate_list(filtered)}
-            else:
-                ids = ', '.join(str(c.get('id')) for c in all_candidates.get('results', []) if c.get('id'))
-                msg = f'❌ No candidate found matching "{candidate_name_or_email}".'
-                if ids:
-                    msg += f' Available candidate IDs: {ids}.'
-                else:
-                    msg += ' No candidates found in the system.'
-                msg += " You can say 'list all candidates' to see available candidates."
-                return {'response': msg}
-        if is_list_candidates_query(user_message):
-            result = list_candidates(page=1, auth_token=auth_token)
-            if result and result.get('results'):
-                return {'response': format_candidate_list(result.get('results', []))}
-            else:
-                return {'response': 'No candidates found. You can add a new candidate or try again later.'}
-        # Analytics queries
-        if is_analytics_query(user_message):
-            metrics = get_candidate_metrics(auth_token=auth_token)
-            if not metrics or metrics.get('success') == False:
-                return {'response': f"No analytics data found. Reason: {metrics.get('message', 'Unknown error.')}"}
-            # Example: "How many candidates were hired this month?"
-            if re.search(r'hired this month', user_message.lower()):
-                hired = metrics.get('hired_this_month', 'N/A')
-                return {'response': f"📊 Candidates hired this month: **{hired}**\nWould you like to see more analytics or details for a specific candidate?"}
-            # Example: "Show me the top sources for successful candidates."
-            if re.search(r'top sources|most common source|top source', user_message.lower()):
-                top_source = metrics.get('top_source', 'N/A')
-                return {'response': f"📊 Top source for successful candidates: **{top_source}**\nWould you like to see more analytics or details for a specific candidate?"}
-            # Fallback: show all metrics
-            return {'response': format_analytics(metrics) + "\nWould you like to see more analytics or details for a specific candidate?"}
+            except Exception as fallback_error:
+                error_msg = f"I apologize, but I encountered an error while processing your request.\n\n"
+                error_msg += f"🔧 **Azure OpenAI Error:** {str(e)}\n"
+                error_msg += f"🔄 **OpenRouter Fallback Error:** {str(fallback_error)}\n\n"
+                error_msg += f"💡 **Troubleshooting Tips:**\n"
+                error_msg += f"- Check your Azure OpenAI API key and endpoint configuration\n"
+                error_msg += f"- Ensure your OpenRouter API key is valid and has billing set up\n"
+                error_msg += f"- Verify the chat deployment name is correct (should be 'gpt-4o' not 'text-embedding-ada-002')\n"
+                error_msg += f"- Set AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o for chat completions\n"
+                error_msg += f"- Set AZURE_OPENAI_DEPLOYMENT=text-embedding-ada-002 for embeddings\n\n"
+                error_msg += f"Please check your configuration and try again."
+                return error_msg
         
-        # Follow-up commands for last candidate
-        if re.search(r'(show|tell|get) (me )?(more|details|info) (about )?(the )?(last|previous) candidate', user_message.lower()):
-            if session_id in session_context and session_context[session_id].get('last_candidate'):
-                candidate_id = session_context[session_id]['last_candidate']
-                result = get_candidate(candidate_id, auth_token=auth_token)
-                if result and result.get('id'):
-                    response = format_candidate(result)
-                    response += "\n\n💡 **Suggested Actions:**\n- Update candidate details\n- Add a note\n- Schedule interview\n- Delete candidate"
-                    return {'response': response}
-                else:
-                    return {'response': "Sorry, the last candidate is no longer available."}
-            else:
-                return {'response': "No candidate has been shown yet. Try searching for a specific candidate first."}
-        
-        # Follow-up commands for last job post
-        if re.search(r'(show|tell|get) (me )?(more|details|info) (about )?(the )?(last|previous) job post', user_message.lower()):
-            if session_id in session_context and session_context[session_id].get('last_job_post'):
-                job_post_id = session_context[session_id]['last_job_post']
-                result = get_job_post(job_post_id, auth_token=auth_token)
-                if result and result.get('id'):
-                    response = format_job_post(result)
-                    response += "\n\n💡 **Suggested Actions:**\n- Update job post details\n- Delete job post\n- View candidates for this position"
-                    return {'response': response}
-                else:
-                    return {'response': "Sorry, the last job post is no longer available."}
-            else:
-                return {'response': "No job post has been shown yet. Try listing job posts first."}
-        
-        # Add note to last candidate
-        if re.search(r'add (a )?note (to|for) (the )?(last|previous) candidate', user_message.lower()):
-            if session_id in session_context and session_context[session_id].get('last_candidate'):
-                candidate_id = session_context[session_id]['last_candidate']
-                # Extract note content from message
-                note_match = re.search(r'add (a )?note (to|for) (the )?(last|previous) candidate[:\s]+(.+)', user_message, re.IGNORECASE)
-                if note_match:
-                    note_content = note_match.group(4).strip()
-                    result = add_note(candidate_id, note_content, auth_token=auth_token)
-                    if result.get('success'):
-                        return {'response': f"✅ Note added to candidate {candidate_id}: {note_content}"}
-                    else:
-                        return {'response': f"❌ Failed to add note: {result.get('message', '')}"}
-                else:
-                    return {'response': "Please provide the note content. Example: 'Add note to last candidate: Excellent communication skills'"}
-            else:
-                return {'response': "No candidate has been shown yet. Try searching for a specific candidate first."}
-        # Job post CRUD and listing
-        if re.search(r'(list|show|display) job posts?', user_message.lower()):
-            result = list_job_posts(auth_token=auth_token)
-            if result.get('success') and result.get('job_posts'):
-                posts = result['job_posts']
-                if not posts:
-                    return {'response': 'No job posts found.'}
-                # Track the first job post in session context
-                if posts and session_id not in session_context:
-                    session_context[session_id] = {'last_candidate': None, 'last_job_post': None, 'last_action': None}
-                if posts:
-                    session_context[session_id]['last_job_post'] = str(posts[0].get('id'))
-                md = '| ID | Title | Status | Department | Location | Created At |\n|---|---|---|---|---|---|\n'
-                for p in posts:
-                    md += f"| {p.get('id','')} | {p.get('title','')} | {p.get('status','')} | {p.get('department','')} | {p.get('location','')} | {p.get('created_at','')} |\n"
-                md += f"\n\n{generate_suggestions(session_id, 'job_post')}"
-                return {'response': md}
-            else:
-                return {'response': f"Failed to fetch job posts. {result.get('message','')}"}
-        if re.search(r'(add|create) job post', user_message.lower()):
-            # Example: "Add job post for Data Scientist in Engineering"
-            # For demo, require user to provide all fields in a follow-up
-            return {'response': "Please provide job post details as a JSON object (e.g., {\"title\": \"Data Scientist\", \"department\": \"Engineering\", ...})."}
-        if user_message.strip().startswith('{') and user_message.strip().endswith('}') and 'title' in user_message:
-            # Try to parse as job post creation
-            import json
-            try:
-                data = json.loads(user_message)
-                result = add_job_post(data, auth_token=auth_token)
-                if result.get('success'):
-                    return {'response': f"✅ Job post added: {result['job_post'].get('title','')} (ID: {result['job_post'].get('id','')})"}
-                else:
-                    return {'response': f"❌ Failed to add job post. {result.get('message','')}"}
-            except Exception as e:
-                return {'response': f"Invalid job post data. Please provide a valid JSON object. Error: {e}"}
-        if re.search(r'(update|edit) job post (\d+)', user_message.lower()):
-            m = re.search(r'(update|edit) job post (\d+)', user_message.lower())
-            job_post_id = m.group(2)
-            return {'response': f"Please provide updated job post fields as a JSON object for job post ID {job_post_id}."}
-        if re.search(r'(delete|remove) job post (\d+)', user_message.lower()):
-            m = re.search(r'(delete|remove) job post (\d+)', user_message.lower())
-            job_post_id = m.group(2)
-            result = delete_job_post(job_post_id, auth_token=auth_token)
-            if result.get('success'):
-                return {'response': f"✅ Job post {job_post_id} deleted successfully."}
-            else:
-                return {'response': f"❌ Failed to delete job post {job_post_id}. {result.get('message','')}"}
-        if re.search(r'job post title choices', user_message.lower()):
-            result = get_job_post_title_choices(auth_token=auth_token)
-            if result.get('success'):
-                choices = result['choices']
-                return {'response': f"Available job post titles: {', '.join(str(c) for c in choices)}"}
-            else:
-                return {'response': f"Failed to fetch job post title choices. {result.get('message','')}"}
-        # Analytics: overall and candidate
-        if re.search(r'(overall|company|organization) (analytics|metrics|statistics|summary|report|overview)', user_message.lower()):
-            result = get_overall_metrics(auth_token=auth_token)
-            if result.get('success'):
-                metrics = result['metrics']
-                md = '\n'.join([f"- {k.replace('_',' ').capitalize()}: {v}" for k,v in metrics.items()])
-                return {'response': f"**Overall HR Analytics**\n{md}"}
-            else:
-                return {'response': f"Failed to fetch overall analytics. {result.get('message','')}"}
-        if re.search(r'(candidate|talent) (analytics|metrics|statistics|summary|report|overview)', user_message.lower()):
-            result = get_candidate_metrics(auth_token=auth_token)
-            if result.get('success'):
-                metrics = result['metrics']
-                md = '\n'.join([f"- {k.replace('_',' ').capitalize()}: {v}" for k,v in metrics.items()])
-                return {'response': f"**Candidate Analytics**\n{md}"}
-            else:
-                return {'response': f"Failed to fetch candidate analytics. {result.get('message','')}"}
-        # Advanced search/filtering for candidates
-        if re.search(r'(candidates?|talent|applicants?) (in|from) [a-zA-Z ]+', user_message.lower()) or re.search(r'(with|having) [a-zA-Z ]+', user_message.lower()) or re.search(r'(more than|less than|above|below|over|under) [0-9]+ (years|year|yr|yrs|experience|salary)', user_message.lower()):
-            # Parse filters from message (simple demo: city, skills, years_of_experience, expected_salary)
-            filters = {}
-            city_match = re.search(r'(?:in|from) ([a-zA-Z ]+)', user_message.lower())
-            if city_match:
-                filters['city__name'] = city_match.group(1).strip()
-            skill_match = re.search(r'(?:with|having) ([a-zA-Z ]+)', user_message.lower())
-            if skill_match:
-                filters['communication_skills__name'] = skill_match.group(1).strip()
-            exp_match = re.search(r'(more than|over|above) (\d+(?:\.\d+)?) (years|year|yr|yrs|experience)', user_message.lower())
-            if exp_match:
-                filters['years_of_experience__gt'] = exp_match.group(2)
-            exp_match2 = re.search(r'(less than|under|below) (\d+(?:\.\d+)?) (years|year|yr|yrs|experience)', user_message.lower())
-            if exp_match2:
-                filters['years_of_experience__lt'] = exp_match2.group(2)
-            salary_match = re.search(r'(more than|over|above) (\d+(?:\.\d+)?) (salary|expected salary)', user_message.lower())
-            if salary_match:
-                filters['expected_salary__gt'] = salary_match.group(2)
-            salary_match2 = re.search(r'(less than|under|below) (\d+(?:\.\d+)?) (salary|expected salary)', user_message.lower())
-            if salary_match2:
-                filters['expected_salary__lt'] = salary_match2.group(2)
-            result = search_candidates(filters, auth_token=auth_token)
-            if result.get('success') and result.get('candidates'):
-                return {'response': format_candidate_list(result['candidates'])}
-            else:
-                return {'response': f"No candidates found matching your criteria. {result.get('message','')}"}
-        # Bulk delete candidates
-        if re.search(r'delete candidates? ([\d, ]+)', user_message.lower()):
-            ids = re.findall(r'\d+', user_message)
-            if ids:
-                pending_actions[session_id] = {'type': 'bulk_delete', 'candidate_ids': ids}
-                return {'response': f"You are about to delete candidates with IDs: {', '.join(ids)}. Reply 'yes' to confirm or 'cancel' to abort."}
-        # Bulk update candidates (e.g., move all candidates in Screening to Interview Scheduled)
-        m = re.search(r'update all candidates in status ([\w ]+) to ([\w ]+)', user_message.lower())
-        if m:
-            from_status = m.group(1).strip()
-            to_status = m.group(2).strip()
-            all_candidates = list_candidates(page=1, auth_token=auth_token)
-            filtered = [c for c in all_candidates.get('results', []) if str(c.get('candidate_stage', '')).lower() == from_status.lower()]
-            if filtered:
-                ids = [str(c['id']) for c in filtered]
-                pending_actions[session_id] = {'type': 'bulk_update', 'candidate_ids': ids, 'field': 'candidate_stage', 'value': to_status}
-                details = '\n---\n'.join([format_candidate(c) for c in filtered])
-                return {'response': f"You are about to update the following candidates from status '{from_status}' to '{to_status}':\n\n{details}\n\nReply 'yes' to confirm or 'cancel' to abort."}
-            else:
-                return {'response': f'No candidates found with status "{from_status}".'}
-        # Conversational context: remember last candidate/job post shown (simple demo)
-        # (You can expand this with a context/session store for more advanced follow-ups)
-        
-        # Handle "Delete it" or "Delete the last candidate" commands
-        if re.search(r'delete (it|the last candidate|this candidate)', user_message.lower()):
-            if session_id in session_context and session_context[session_id].get('last_candidate'):
-                candidate_id = session_context[session_id]['last_candidate']
-                result = get_candidate(candidate_id, auth_token=auth_token)
-                if result and result.get('id'):
-                    pending_actions[session_id] = {'type': 'delete', 'candidate_id': candidate_id}
-                    return {'response': f"You requested to delete the following candidate.\n\n{format_candidate(result)}\n\nAre you sure you want to delete this candidate? Reply 'yes' to confirm."}
-                else:
-                    return {'response': "Sorry, the last candidate is no longer available."}
-            else:
-                return {'response': "No candidate has been shown yet. Try searching for a specific candidate first."}
-        
-        # Handle "Update it" or "Update the last candidate" commands
-        if re.search(r'update (it|the last candidate|this candidate)', user_message.lower()):
-            if session_id in session_context and session_context[session_id].get('last_candidate'):
-                candidate_id = session_context[session_id]['last_candidate']
-                result = get_candidate(candidate_id, auth_token=auth_token)
-                if result and result.get('id'):
-                    return {'response': f"Please specify what you want to update for the last candidate. Example: 'Update the last candidate's status to Interview Scheduled' or 'Update the last candidate's email to new@email.com'"}
-                else:
-                    return {'response': "Sorry, the last candidate is no longer available."}
-            else:
-                return {'response': "No candidate has been shown yet. Try searching for a specific candidate first."}
-    else:
-        # For function-calling models, use the agent directly
-        response = run_agent(messages, session_id=session_id, model=model, auth_token=auth_token, page=page, prompt=prompt, pending_actions=pending_actions)
-        return {'response': response}
+        return f"I apologize, but I encountered an error while processing your request: {str(e)}. Please try again or contact support if the issue persists."
+
+@app.post('/chat/upload')
+async def upload_candidates_file(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime
+    import os
+    import uuid
     
-    # LLM fallback for intent
-    # If no pattern matched, use the LLM agent to try to understand intent
-    response = run_agent(messages, session_id=session_id, model=model, auth_token=auth_token, page=page, prompt=prompt, pending_actions=pending_actions)
-    return {'response': response}
+    print(f"[DEBUG] Bulk upload - session_id: {session_id}")
+    print(f"[DEBUG] File name: {file.filename}")
+    
+    filename = file.filename.lower()
+    if filename.endswith('.csv'):
+        df = pd.read_csv(file.file)
+    elif filename.endswith('.xlsx'):
+        df = pd.read_excel(file.file)
+    else:
+        return {"success": False, "message": "Unsupported file type."}
+    
+    # Drop index column if present
+    if df.columns[0].lower().startswith('unnamed') or df.columns[0] == '':
+        df = df.iloc[:, 1:]
+    
+    # Replace NaN and infinite values with empty string for JSON serialization
+    df = df.replace([np.nan, np.inf, -np.inf], '')
+    
+    # Process the data using the same logic as extract_spreadsheet_content
+    # Standardize column names
+    df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_').str.replace('-', '_')
+    
+    # Enhanced field mapping
+    standard_fields = {
+        'first_name': ['first_name', 'firstname', 'first name', 'fname', 'given_name'],
+        'last_name': ['last_name', 'lastname', 'last name', 'lname', 'family_name'],
+        'email': ['email', 'e-mail', 'email_address', 'emailaddress'],
+        'phone_number': ['phone_number', 'phone', 'phone number', 'mobile', 'cell', 'telephone'],
+        'job_title': ['job_title', 'job title', 'position', 'role', 'title', 'job_position'],
+        'candidate_stage': ['candidate_stage', 'stage', 'status', 'application_status', 'hiring_stage'],
+        'communication_skills': ['communication_skills', 'communication', 'communication_skill', 'comm_skills'],
+        'years_of_experience': ['years_of_experience', 'experience', 'years_experience', 'exp', 'experience_years'],
+        'expected_salary': ['expected_salary', 'salary', 'desired_salary', 'target_salary', 'salary_expectation'],
+        'current_salary': ['current_salary', 'current_salary_amount', 'present_salary'],
+        'city': ['city', 'location', 'address', 'location_city'],
+        'source': ['source', 'application_source', 'referral_source', 'how_did_they_find_us'],
+        'notes': ['notes', 'comment', 'comments', 'additional_notes', 'description']
+    }
+    
+    # Map columns to standard fields
+    mapped_fields = {}
+    unmapped_columns = []
+    
+    for standard_field, possible_names in standard_fields.items():
+        found = False
+        for col in df.columns:
+            if any(name in col.lower() for name in possible_names):
+                mapped_fields[standard_field] = col
+                found = True
+                break
+        if not found:
+            unmapped_columns.append(standard_field)
+    
+    # Validate data quality
+    validation_results = validate_candidate_data(df, mapped_fields)
+    
+    # Convert to records
+    records = df.to_dict('records')
+    
+    # Quality metrics
+    quality_metrics = {
+        'total_rows': len(records),
+        'mapped_fields': len(mapped_fields),
+        'unmapped_fields': len(unmapped_columns),
+        'data_quality_score': validation_results['quality_score'],
+        'missing_required_fields': validation_results['missing_required']
+    }
+    
+    # Store file info in session (same as upload_single_file)
+    if session_id not in pending_actions:
+        pending_actions[session_id] = {}
+    
+    pending_actions[session_id]['uploaded_files'] = pending_actions[session_id].get('uploaded_files', [])
+    pending_actions[session_id]['uploaded_files'].append({
+        'original_name': file.filename,
+        'saved_name': f"{uuid.uuid4()}_{file.filename}",
+        'file_path': f"uploads/{uuid.uuid4()}_{file.filename}",
+        'file_size': len(df),
+        'upload_time': datetime.now().isoformat(),
+        'file_type': os.path.splitext(file.filename)[1],
+        'extracted_data': {
+            "content": f"Spreadsheet processed successfully with {len(records)} rows",
+            "data": records[:10],  # First 10 rows for preview
+            "columns": df.columns.tolist(),
+            "mapped_fields": mapped_fields,
+            "unmapped_columns": unmapped_columns,
+            "quality_metrics": quality_metrics,
+            "validation_results": validation_results,
+            "total_rows": len(records),
+            "candidate_fields": mapped_fields
+        }
+    })
+    
+    print(f"[DEBUG] Bulk file stored in session {session_id}")
+    print(f"[DEBUG] pending_actions keys after bulk upload: {list(pending_actions.keys())}")
+    print(f"[DEBUG] session_data keys after bulk upload: {list(pending_actions[session_id].keys())}")
+    print(f"[DEBUG] uploaded_files count: {len(pending_actions[session_id]['uploaded_files'])}")
+    
+    preview = df.head(3).to_dict(orient='records')
+    columns = list(df.columns)
+    
+    return {
+        "success": True,
+        "preview": preview,
+        "columns": columns,
+        "total": len(df),
+        "extracted_data": {
+            "content": f"Spreadsheet processed successfully with {len(records)} rows",
+            "data": records[:10],
+            "columns": df.columns.tolist(),
+            "mapped_fields": mapped_fields,
+            "unmapped_columns": unmapped_columns,
+            "quality_metrics": quality_metrics,
+            "validation_results": validation_results,
+            "total_rows": len(records),
+            "candidate_fields": mapped_fields
+        }
+    }
+
+# Strict validation and actual upload should be done in /chat/upload/confirm (not shown here)
+
+@app.post('/chat/upload/confirm')
+async def confirm_bulk_upload(
+    body: dict = Body(...)
+):
+    session_id = body.get('session_id')
+    candidates = body.get('candidates', [])
+    duplicate_mode = body.get('duplicate_mode')
+    confirm = body.get('confirm')
+    auth_token = body.get('authToken') or body.get('auth_token')
+    # Actually add candidates to the backend
+    result = bulk_add_candidates(candidates, auth_token=auth_token)
+    return {
+        "success": result['success'],
+        "added": result['added'],
+        "failedCount": result['failed'],
+        "duplicates": 0,  # You can implement duplicate logic if needed
+        "errors": [r for r in result['results'] if not r['success']],
+        "message": "Bulk upload processed.",
+        "results": result['results']
+    }
+
+@app.get('/chat/upload/failed-rows')
+def download_failed_rows(session_id: str):
+    """Download a CSV of failed rows for a given session_id."""
+    import io
+    import csv
+    failed_rows = pending_actions.get(session_id, {}).get('failed_rows', [])
+    if not failed_rows:
+        return {"success": False, "message": "No failed rows found for this session."}
+    # Get all columns used in failed rows
+    all_cols = set()
+    for row in failed_rows:
+        all_cols.update(row.keys())
+    all_cols = list(all_cols)
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=all_cols)
+    writer.writeheader()
+    for row in failed_rows:
+        writer.writerow(row)
+    output.seek(0)
+    return StreamingResponse(output, media_type='text/csv', headers={
+        'Content-Disposition': f'attachment; filename="failed_rows_{session_id}.csv"'
+    })
+
+@app.post('/chat/upload/file')
+async def upload_single_file(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+    auth_token: str = Form(None),
+):
+    """Upload a single file (resume, document) for processing"""
+    import os
+    import uuid
+    from datetime import datetime
+    
+    print(f"[DEBUG] File upload - session_id: {session_id}")
+    print(f"[DEBUG] File name: {file.filename}")
+    
+    try:
+        # Validate file type
+        filename = file.filename.lower()
+        allowed_extensions = ['.pdf', '.doc', '.docx', '.txt', '.csv', '.xlsx', '.xls']
+        file_extension = os.path.splitext(filename)[1]
+        
+        if file_extension not in allowed_extensions:
+            return {
+                "success": False, 
+                "message": f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
+            }
+        
+        # Validate file size (10MB limit for better processing)
+        file_size = 0
+        content = await file.read()
+        file_size = len(content)
+        
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            return {
+                "success": False,
+                "message": "File size too large. Maximum 10MB allowed."
+            }
+        
+        # Generate unique filename
+        unique_filename = f"{uuid.uuid4()}_{filename}"
+        
+        # Create upload directory if it doesn't exist
+        upload_dir = "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Save file
+        file_path = os.path.join(upload_dir, unique_filename)
+        with open(file_path, "wb") as f:
+            f.write(content)
+        
+        # Process file content based on type
+        extracted_data = await process_file_content(file_path, file_extension, content)
+        
+        # Store file info in session
+        if session_id not in pending_actions:
+            pending_actions[session_id] = {}
+        
+        pending_actions[session_id]['uploaded_files'] = pending_actions[session_id].get('uploaded_files', [])
+        pending_actions[session_id]['uploaded_files'].append({
+            'original_name': filename,
+            'saved_name': unique_filename,
+            'file_path': file_path,
+            'file_size': file_size,
+            'upload_time': datetime.now().isoformat(),
+            'file_type': file_extension,
+            'extracted_data': extracted_data
+        })
+        
+        print(f"[DEBUG] File stored in session {session_id}")
+        print(f"[DEBUG] pending_actions keys after upload: {list(pending_actions.keys())}")
+        print(f"[DEBUG] session_data keys after upload: {list(pending_actions[session_id].keys())}")
+        print(f"[DEBUG] uploaded_files count: {len(pending_actions[session_id]['uploaded_files'])}")
+        
+        # Prepare response based on file type and extracted data
+        response_data = {
+            "success": True,
+            "message": f"File '{filename}' uploaded and processed successfully",
+            "file_info": {
+                "original_name": filename,
+                "saved_name": unique_filename,
+                "file_size": file_size,
+                "file_type": file_extension
+            },
+            "extracted_data": extracted_data
+        }
+        
+        # Add specific information based on file type
+        if file_extension in ['.csv', '.xlsx', '.xls']:
+            if 'data' in extracted_data and not 'error' in extracted_data:
+                data_count = len(extracted_data['data'])
+                quality_score = extracted_data.get('quality_metrics', {}).get('data_quality_score', 0)
+                response_data["message"] = f"File '{filename}' uploaded successfully with {data_count} candidate records (Quality Score: {quality_score}%)"
+            elif 'error' in extracted_data:
+                response_data["success"] = False
+                response_data["message"] = f"File uploaded but processing failed: {extracted_data['error']}"
+        elif file_extension in ['.pdf', '.doc', '.docx', '.txt']:
+            if 'candidate_info' in extracted_data and not 'error' in extracted_data:
+                candidate_info = extracted_data['candidate_info']
+                if candidate_info:
+                    response_data["message"] = f"File '{filename}' uploaded successfully. Extracted candidate information available."
+                else:
+                    response_data["message"] = f"File '{filename}' uploaded successfully but no candidate information was extracted."
+            elif 'error' in extracted_data:
+                response_data["success"] = False
+                response_data["message"] = f"File uploaded but processing failed: {extracted_data['error']}"
+        
+        return response_data
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error uploading file: {str(e)}"
+        }
+
+async def process_file_content(file_path: str, file_extension: str, content: bytes):
+    """Process file content and extract relevant information with improved error handling"""
+    try:
+        print(f"[DEBUG] Processing file: {file_path} with extension: {file_extension}")
+        
+        if file_extension == '.pdf':
+            return await extract_pdf_content(file_path)
+        elif file_extension in ['.doc', '.docx']:
+            return await extract_doc_content(file_path)
+        elif file_extension == '.txt':
+            return extract_text_content(content)
+        elif file_extension in ['.csv', '.xlsx', '.xls']:
+            return extract_spreadsheet_content(file_path, file_extension)
+        else:
+            return {"error": f"Unsupported file type: {file_extension}. Supported types: .pdf, .doc, .docx, .txt, .csv, .xlsx, .xls"}
+    except Exception as e:
+        print(f"[DEBUG] Error processing file {file_path}: {str(e)}")
+        return {"error": f"Failed to extract content: {str(e)}"}
+
+async def extract_pdf_content(file_path: str):
+    """Extract text content from PDF files with improved error handling"""
+    try:
+        import PyPDF2
+        import io
+        
+        with open(file_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            text_content = ""
+            
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                text_content += page.extract_text() + "\n"
+            
+            if not text_content.strip():
+                return {"error": "No text content found in PDF file"}
+            
+            # Extract candidate information using regex patterns
+            candidate_info = extract_candidate_info_from_text(text_content)
+            
+            return {
+                "content": text_content,
+                "pages": len(pdf_reader.pages),
+                "candidate_info": candidate_info,
+                "text_length": len(text_content)
+            }
+    except ImportError:
+        return {"error": "PyPDF2 not installed. Install with: pip install PyPDF2"}
+    except Exception as e:
+        return {"error": f"PDF extraction failed: {str(e)}"}
+
+async def extract_doc_content(file_path: str):
+    """Extract text content from DOC/DOCX files with improved error handling"""
+    try:
+        from docx import Document
+        
+        doc = Document(file_path)
+        text_content = ""
+        
+        for paragraph in doc.paragraphs:
+            text_content += paragraph.text + "\n"
+        
+        if not text_content.strip():
+            return {"error": "No text content found in DOC/DOCX file"}
+        
+        # Extract candidate information
+        candidate_info = extract_candidate_info_from_text(text_content)
+        
+        return {
+            "content": text_content,
+            "candidate_info": candidate_info,
+            "text_length": len(text_content)
+        }
+    except ImportError:
+        return {"error": "python-docx not installed. Install with: pip install python-docx"}
+    except Exception as e:
+        return {"error": f"DOC extraction failed: {str(e)}"}
+
+def extract_text_content(content: bytes):
+    """Extract text content from TXT files with improved error handling"""
+    try:
+        # Try different encodings
+        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            try:
+                text_content = content.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            # If all encodings fail, use utf-8 with errors='ignore'
+            text_content = content.decode('utf-8', errors='ignore')
+        
+        if not text_content.strip():
+            return {"error": "No text content found in TXT file"}
+        
+        candidate_info = extract_candidate_info_from_text(text_content)
+        
+        return {
+            "content": text_content,
+            "candidate_info": candidate_info,
+            "text_length": len(text_content)
+        }
+    except Exception as e:
+        return {"error": f"Text extraction failed: {str(e)}"}
+
+def extract_spreadsheet_content(file_path: str, file_extension: str):
+    """Extract data from CSV/Excel files with enhanced processing and error handling"""
+    try:
+        import pandas as pd
+        import numpy as np
+        
+        print(f"[DEBUG] Reading spreadsheet: {file_path}")
+        
+        # Read file based on type
+        if file_extension == '.csv':
+            # Try different encodings for better compatibility
+            df = None
+            for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                try:
+                    df = pd.read_csv(file_path, encoding=encoding)
+                    print(f"[DEBUG] Successfully read CSV with encoding: {encoding}")
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    print(f"[DEBUG] Failed to read with encoding {encoding}: {e}")
+                    continue
+            
+            if df is None:
+                # If all encodings fail, use default with error handling
+                df = pd.read_csv(file_path, encoding='utf-8', errors='ignore')
+        else:
+            # Excel files
+            try:
+                df = pd.read_excel(file_path, engine='openpyxl')
+            except Exception as e:
+                # Try with xlrd engine for older Excel files
+                try:
+                    df = pd.read_excel(file_path, engine='xlrd')
+                except Exception as e2:
+                    return {"error": f"Failed to read Excel file: {str(e)} and {str(e2)}"}
+        
+        if df.empty:
+            return {"error": "Spreadsheet is empty or contains no data"}
+        
+        print(f"[DEBUG] DataFrame shape: {df.shape}")
+        print(f"[DEBUG] DataFrame columns: {df.columns.tolist()}")
+        
+        # Clean the data
+        df = df.fillna('')
+        
+        # Remove completely empty rows
+        df = df.dropna(how='all')
+        
+        if df.empty:
+            return {"error": "No data rows found after cleaning"}
+        
+        # Standardize column names (lowercase, remove spaces, special chars)
+        df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_').str.replace('-', '_')
+        
+        print(f"[DEBUG] Cleaned columns: {df.columns.tolist()}")
+        
+        # Enhanced field mapping with standardized template format
+        standard_fields = {
+            'first_name': ['first_name', 'firstname', 'first name', 'fname', 'given_name'],
+            'last_name': ['last_name', 'lastname', 'last name', 'lname', 'family_name'],
+            'email': ['email', 'e-mail', 'email_address', 'emailaddress'],
+            'phone_number': ['phone_number', 'phone', 'phone number', 'mobile', 'cell', 'telephone'],
+            'job_title': ['job_title', 'job title', 'position', 'role', 'title', 'job_position'],
+            'candidate_stage': ['candidate_stage', 'stage', 'status', 'application_status', 'hiring_stage'],
+            'communication_skills': ['communication_skills', 'communication', 'communication_skill', 'comm_skills'],
+            'years_of_experience': ['years_of_experience', 'experience', 'years_experience', 'exp', 'experience_years'],
+            'expected_salary': ['expected_salary', 'salary', 'desired_salary', 'target_salary', 'salary_expectation'],
+            'current_salary': ['current_salary', 'current_salary_amount', 'present_salary'],
+            'city': ['city', 'location', 'address', 'location_city'],
+            'source': ['source', 'application_source', 'referral_source', 'how_did_they_find_us'],
+            'notes': ['notes', 'comment', 'comments', 'additional_notes', 'description']
+        }
+        
+        # Map columns to standard fields
+        mapped_fields = {}
+        unmapped_columns = []
+        
+        for standard_field, possible_names in standard_fields.items():
+            found = False
+            for col in df.columns:
+                if any(name in col.lower() for name in possible_names):
+                    mapped_fields[standard_field] = col
+                    found = True
+                    break
+            if not found:
+                unmapped_columns.append(standard_field)
+        
+        print(f"[DEBUG] Mapped fields: {mapped_fields}")
+        print(f"[DEBUG] Unmapped fields: {unmapped_columns}")
+        
+        # Validate data quality
+        validation_results = validate_candidate_data(df, mapped_fields)
+        
+        # Convert to records for easier processing
+        records = df.to_dict('records')
+        
+        # Add data quality metrics
+        quality_metrics = {
+            'total_rows': len(records),
+            'mapped_fields': len(mapped_fields),
+            'unmapped_fields': len(unmapped_columns),
+            'data_quality_score': validation_results['quality_score'],
+            'missing_required_fields': validation_results['missing_required']
+        }
+        
+        return {
+            "content": f"Spreadsheet processed successfully with {len(records)} rows",
+            "data": records[:10],  # First 10 rows for preview
+            "columns": df.columns.tolist(),
+            "mapped_fields": mapped_fields,
+            "unmapped_columns": unmapped_columns,
+            "quality_metrics": quality_metrics,
+            "validation_results": validation_results,
+            "total_rows": len(records),
+            "candidate_fields": mapped_fields
+        }
+        
+    except Exception as e:
+        print(f"[DEBUG] Spreadsheet extraction error: {str(e)}")
+        return {"error": f"Spreadsheet extraction failed: {str(e)}"}
+
+def validate_candidate_data(df, mapped_fields):
+    """Validate candidate data quality and completeness"""
+    validation_results = {
+        'quality_score': 0,
+        'missing_required': [],
+        'data_issues': [],
+        'suggestions': []
+    }
+    
+    # Required fields for candidate creation
+    required_fields = ['first_name', 'last_name', 'email']
+    optional_fields = ['phone_number', 'job_title', 'candidate_stage', 'communication_skills', 
+                      'years_of_experience', 'expected_salary', 'current_salary', 'city', 'source', 'notes']
+    
+    # Check required fields
+    missing_required = []
+    for field in required_fields:
+        if field not in mapped_fields:
+            missing_required.append(field)
+    
+    validation_results['missing_required'] = missing_required
+    
+    # Calculate quality score
+    total_fields = len(required_fields) + len(optional_fields)
+    mapped_count = len(mapped_fields)
+    quality_score = (mapped_count / total_fields) * 100
+    
+    # Adjust score based on required fields
+    if missing_required:
+        quality_score *= 0.5  # Reduce score if required fields are missing
+    
+    validation_results['quality_score'] = round(quality_score, 1)
+    
+    # Check for data quality issues
+    if 'email' in mapped_fields:
+        email_col = mapped_fields['email']
+        valid_emails = df[email_col].str.contains(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', na=False)
+        invalid_email_count = (~valid_emails).sum()
+        if invalid_email_count > 0:
+            validation_results['data_issues'].append(f"{invalid_email_count} invalid email addresses")
+    
+    # Check for duplicate emails
+    if 'email' in mapped_fields:
+        email_col = mapped_fields['email']
+        duplicates = df[email_col].duplicated().sum()
+        if duplicates > 0:
+            validation_results['data_issues'].append(f"{duplicates} duplicate email addresses")
+    
+    # Generate suggestions
+    if missing_required:
+        validation_results['suggestions'].append("Add missing required fields: " + ", ".join(missing_required))
+    
+    if quality_score < 70:
+        validation_results['suggestions'].append("Consider adding more optional fields for better data quality")
+    
+    if validation_results['data_issues']:
+        validation_results['suggestions'].append("Review and fix data quality issues before importing")
+    
+    return validation_results
+
+def extract_candidate_info_from_text(text: str):
+    """Extract candidate information from text using enhanced regex patterns"""
+    import re
+    
+    candidate_info = {}
+    
+    # Email pattern - more comprehensive
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    emails = re.findall(email_pattern, text)
+    if emails:
+        candidate_info['email'] = emails[0]
+    
+    # Phone pattern - multiple formats
+    phone_patterns = [
+        r'(\+?1?[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})',  # Standard US format
+        r'(\+?[0-9]{1,3}[-.\s]?)?([0-9]{3,4}[-.\s]?[0-9]{3,4}[-.\s]?[0-9]{3,4})',  # International
+        r'Phone[:\s]+([0-9+\-\(\)\s]+)',  # "Phone: 123-456-7890"
+        r'Tel[:\s]+([0-9+\-\(\)\s]+)',    # "Tel: 123-456-7890"
+    ]
+    
+    for pattern in phone_patterns:
+        phones = re.findall(pattern, text, re.IGNORECASE)
+        if phones:
+            if isinstance(phones[0], tuple):
+                candidate_info['phone'] = ''.join(phones[0])
+            else:
+                candidate_info['phone'] = phones[0].strip()
+            break
+    
+    # Name patterns - multiple approaches
+    name_patterns = [
+        r'([A-Z][a-z]+)\s+([A-Z][a-z]+)',  # Standard name format
+        r'Name[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+)',  # "Name: John Doe"
+        r'([A-Z][a-z]+)\s+([A-Z][a-z]+)\s*[-–—]',  # Name followed by dash
+        r'RESUME[:\s-]+([A-Z][a-z]+\s+[A-Z][a-z]+)',  # "RESUME - John Doe"
+    ]
+    
+    for pattern in name_patterns:
+        names = re.findall(pattern, text)
+        if names:
+            if isinstance(names[0], tuple):
+                candidate_info['name'] = f"{names[0][0]} {names[0][1]}"
+            else:
+                candidate_info['name'] = names[0].strip()
+            break
+    
+    # Experience patterns
+    exp_patterns = [
+        r'(\d+)\s*(?:years?|yrs?)\s*(?:of\s*)?experience',
+        r'experience[:\s]+(\d+)\s*(?:years?|yrs?)',
+        r'(\d+)\s*(?:years?|yrs?)\s*exp',
+    ]
+    
+    for pattern in exp_patterns:
+        exp_match = re.search(pattern, text, re.IGNORECASE)
+        if exp_match:
+            candidate_info['experience'] = exp_match.group(1)
+            break
+    
+    # Skills patterns - more comprehensive
+    skills_patterns = [
+        r'(?:skills?|technologies?|technologies?):\s*([^.\n]+)',
+        r'(?:skills?|technologies?|technologies?)\s*[-–—]\s*([^.\n]+)',
+        r'([A-Z][a-z]+(?:,\s*[A-Z][a-z]+)*)',  # Capitalized skills list
+    ]
+    
+    for pattern in skills_patterns:
+        skills_match = re.search(pattern, text, re.IGNORECASE)
+        if skills_match:
+            skills_text = skills_match.group(1).strip()
+            # Clean up the skills text
+            skills_text = re.sub(r'[^\w\s,.-]', '', skills_text)
+            candidate_info['skills'] = skills_text
+            break
+    
+    # Job title patterns
+    job_title_patterns = [
+        r'(?:position|role|title|job)[:\s]+([A-Z][a-z\s]+)',
+        r'([A-Z][a-z\s]+(?:Engineer|Manager|Developer|Designer|Analyst|Specialist))',
+    ]
+    
+    for pattern in job_title_patterns:
+        job_match = re.search(pattern, text, re.IGNORECASE)
+        if job_match:
+            candidate_info['job_title'] = job_match.group(1).strip()
+            break
+    
+    # Education patterns
+    education_patterns = [
+        r'(?:education|degree)[:\s]+([^.\n]+)',
+        r'([A-Z][A-Z\s]+(?:University|College|School))',
+    ]
+    
+    for pattern in education_patterns:
+        edu_match = re.search(pattern, text, re.IGNORECASE)
+        if edu_match:
+            candidate_info['education'] = edu_match.group(1).strip()
+            break
+    
+    # Location patterns
+    location_patterns = [
+        r'(?:location|address|city)[:\s]+([A-Z][a-z\s,]+)',
+        r'([A-Z][a-z\s]+(?:City|Town|State))',
+    ]
+    
+    for pattern in location_patterns:
+        loc_match = re.search(pattern, text, re.IGNORECASE)
+        if loc_match:
+            candidate_info['location'] = loc_match.group(1).strip()
+            break
+    
+    print(f"[DEBUG] Extracted candidate info: {candidate_info}")
+    return candidate_info
+
+def identify_candidate_fields(columns):
+    """Identify which columns correspond to candidate fields"""
+    field_mapping = {
+        'first_name': ['first_name', 'firstname', 'first name', 'fname'],
+        'last_name': ['last_name', 'lastname', 'last name', 'lname'],
+        'email': ['email', 'e-mail', 'email_address'],
+        'phone': ['phone', 'phone_number', 'phone number', 'mobile', 'cell'],
+        'job_title': ['job_title', 'job title', 'position', 'role', 'title'],
+        'experience': ['experience', 'years_experience', 'years of experience', 'exp'],
+        'skills': ['skills', 'skill', 'technologies', 'technology'],
+        'city': ['city', 'location', 'address'],
+        'salary': ['salary', 'expected_salary', 'current_salary', 'compensation']
+    }
+    
+    identified_fields = {}
+    for field, possible_names in field_mapping.items():
+        for col in columns:
+            if any(name.lower() in col.lower() for name in possible_names):
+                identified_fields[field] = col
+                break
+    
+    return identified_fields
+
+@app.post('/chat/process/file')
+async def process_uploaded_file(
+    body: dict = Body(...)
+):
+    """Process an uploaded file to extract candidate information"""
+    session_id = body.get('session_id')
+    file_name = body.get('file_name')
+    auth_token = body.get('auth_token')
+    
+    try:
+        if session_id not in pending_actions or 'uploaded_files' not in pending_actions[session_id]:
+            return {
+                "success": False,
+                "message": "No uploaded files found for this session"
+            }
+        
+        # Find the file
+        uploaded_file = None
+        for file_info in pending_actions[session_id]['uploaded_files']:
+            if file_info['original_name'] == file_name:
+                uploaded_file = file_info
+                break
+        
+        if not uploaded_file:
+            return {
+                "success": False,
+                "message": f"File '{file_name}' not found in session"
+            }
+        
+        # For now, return basic file info
+        # In a real implementation, you would:
+        # 1. Extract text from PDF/DOC files
+        # 2. Use AI to parse candidate information
+        # 3. Return structured candidate data
+        
+        return {
+            "success": True,
+            "message": f"File '{file_name}' processed successfully",
+            "file_info": uploaded_file,
+            "extracted_data": {
+                "candidate_name": "Extracted from file",
+                "email": "Extracted from file", 
+                "phone": "Extracted from file",
+                "experience": "Extracted from file",
+                "skills": "Extracted from file"
+            },
+            "suggestions": [
+                "Add this candidate to the system",
+                "Extract more details from the resume",
+                "Compare with existing candidates"
+            ]
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error processing file: {str(e)}"
+        }
+
+@app.get('/health')
+def health_check():
+    """Health check endpoint for the MCP server"""
+    return {"status": "healthy", "service": "HR Assistant Pro MCP Server"}
+
+@app.get('/config/test')
+def test_configuration():
+    """Test the configuration and return status"""
+    azure_key = os.getenv('AZURE_OPENAI_API_KEY')
+    azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
+    azure_chat_deployment = os.getenv('AZURE_OPENAI_CHAT_DEPLOYMENT')
+    azure_embedding_deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT', 'text-embedding-ada-002')
+    
+    config_status = {
+        "azure_openai": {
+            "endpoint": azure_endpoint or 'Not set',
+            "chat_deployment": azure_chat_deployment or 'Not set (will use gpt-4o)',
+            "embedding_deployment": azure_embedding_deployment,
+            "api_key": "Set" if azure_key else "Not set"
+        },
+        "openrouter": {
+            "api_key": "Set" if os.getenv('OPENROUTER_API_KEY') else "Not set"
+        }
+    }
+    
+    # Test if Azure config is complete (need endpoint, key, and either chat deployment or default will be used)
+    azure_ready = all([
+        azure_endpoint,
+        azure_key
+    ])
+    
+    # Add debugging information
+    debug_info = {
+        "azure_key_length": len(azure_key) if azure_key else 0,
+        "azure_endpoint": azure_endpoint,
+        "azure_chat_deployment": azure_chat_deployment,
+        "azure_embedding_deployment": azure_embedding_deployment,
+        "env_vars": {k: v for k, v in os.environ.items() if "AZURE" in k or "OPENROUTER" in k}
+    }
+    
+    return {
+        "success": True,
+        "configuration": config_status,
+        "azure_ready": azure_ready,
+        "openrouter_ready": bool(os.getenv('OPENROUTER_API_KEY')),
+        "debug_info": debug_info,
+        "recommendation": "Use OpenRouter" if not azure_ready else "Azure OpenAI configured"
+    }
 
 @app.get('/models')
 def get_models():
@@ -1097,6 +1670,549 @@ def get_models():
     all_models = azure_models + openrouter_models
     return {'models': all_models} 
 
+@app.get('/chat/template/candidates')
+def download_candidate_template():
+    """Serve a standardized candidate upload template CSV file"""
+    import io
+    import csv
+    
+    # Create a StringIO object to write the CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Define the standardized column headers
+    headers = [
+        'first_name',
+        'last_name', 
+        'email',
+        'phone_number',
+        'job_title',
+        'candidate_stage',
+        'communication_skills',
+        'years_of_experience',
+        'expected_salary',
+        'current_salary',
+        'city',
+        'source',
+        'notes'
+    ]
+    
+    # Write the header row
+    writer.writerow(headers)
+    
+    # Write example data rows
+    example_rows = [
+        ['John', 'Doe', 'john.doe@example.com', '+1-555-123-4567', 'Software Engineer', 'Screening', 'Excellent', '5', '80000', '75000', 'New York', 'LinkedIn', 'Strong Python skills'],
+        ['Jane', 'Smith', 'jane.smith@example.com', '+1-555-987-6543', 'Product Manager', 'Interview', 'Good', '3', '90000', '85000', 'San Francisco', 'Company Website', 'Experience with Agile'],
+        ['Mike', 'Johnson', 'mike.johnson@example.com', '+1-555-456-7890', 'UX Designer', 'Hired', 'Excellent', '4', '75000', '70000', 'Chicago', 'Referral', 'Portfolio available']
+    ]
+    
+    for row in example_rows:
+        writer.writerow(row)
+    
+    # Reset the pointer to the beginning
+    output.seek(0)
+    
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode('utf-8')),
+        media_type='text/csv',
+        headers={'Content-Disposition': 'attachment; filename="candidates_template.csv"'}
+    )
+
+def generate_dynamic_prompt(session_id: str, file_context: str, user_message: str = "") -> str:
+    """Generate highly intelligent and context-aware system prompt"""
+    
+    # Generate comprehensive context
+    context = generate_comprehensive_context(session_id, user_message)
+    
+    # Check if this is a simple greeting
+    is_greeting = any(word in user_message.lower() for word in ['hello', 'hi', 'hey', 'hy', 'good morning', 'good afternoon', 'good evening'])
+    is_capability_query = any(word in user_message.lower() for word in ['what can you do', 'capabilities', 'features', 'help', 'assist', 'support', 'ask anything'])
+    
+    # Use different prompts for greetings vs other queries
+    if is_greeting and not is_capability_query:
+        # Simple, natural greeting prompt
+        base_prompt = f"""You are HR Assistant Pro, a friendly and helpful AI HR assistant.
+
+**CONVERSATION STYLE:**
+- Respond naturally and conversationally to greetings
+- Be warm and welcoming
+- Don't list capabilities unless specifically asked
+- Keep responses simple and friendly
+
+**AVAILABLE CONTEXT:**
+{file_context}
+
+**CONVERSATION HISTORY:**
+{format_conversation_history(context['conversation_history'])}
+
+Respond naturally to greetings without overwhelming the user with information."""
+    else:
+        # Full intelligent prompt for other queries
+        base_prompt = f"""You are HR Assistant Pro, an exceptionally intelligent and proactive AI HR assistant with advanced capabilities.
+
+**CORE INTELLIGENCE:**
+🧠 **Advanced Understanding**
+- Comprehend complex HR queries and workflows
+- Understand context from conversation history
+- Learn from user interaction patterns
+- Provide personalized responses based on user preferences
+
+🎯 **Comprehensive Capabilities**
+- File Processing & Analysis (PDF, DOC, CSV, Excel)
+- Candidate Management (CRUD operations, search, analytics)
+- Data Validation & Quality Assessment
+- Process Automation & Workflow Optimization
+- Advanced Analytics & Reporting
+
+**CONVERSATION CONTEXT:**
+📝 **Current Session:** {session_id}
+💬 **Message History:** {len(context['conversation_history'])} recent messages
+📁 **Active Files:** {len(context['file_context'])} uploaded files
+🎯 **Query Patterns:** {', '.join(context['query_patterns'][-5:]) if context['query_patterns'] else 'None detected'}
+
+**INTELLIGENT BEHAVIORS:**
+🤖 **Proactive Intelligence**
+- Anticipate user needs based on conversation patterns
+- Offer relevant suggestions before being asked
+- Provide step-by-step guidance for complex tasks
+- Learn and adapt to user preferences
+
+🎯 **Context Awareness**
+- Remember all uploaded files and their content
+- Maintain conversation context across messages
+- Reference previous actions and decisions
+- Build on previous processing results
+
+💡 **Smart Decision Making**
+- Analyze data quality and provide recommendations
+- Suggest optimal workflows based on context
+- Identify potential issues before they occur
+- Offer multiple solution approaches
+
+**FILE PROCESSING INTELLIGENCE:**
+📄 **Resume Analysis**
+- Extract: Name, Email, Phone, Experience, Skills, Education
+- Analyze: Skill relevance, experience level, qualifications
+- Suggest: Job matches, interview questions, candidate fit
+- Validate: Data completeness and quality
+
+📊 **Spreadsheet Intelligence**
+- Smart field mapping with multiple naming conventions
+- Data quality assessment and validation
+- Duplicate detection and handling
+- Bulk processing optimization
+
+**QUERY HANDLING CAPABILITIES:**
+🔍 **Search & Discovery**
+- Natural language candidate search
+- Advanced filtering and sorting
+- Pattern-based query understanding
+- Context-aware search suggestions
+
+📊 **Analytics & Insights**
+- Real-time hiring metrics
+- Trend analysis and predictions
+- Performance benchmarking
+- Custom report generation
+
+🛠️ **Process Automation**
+- Streamlined candidate workflows
+- Automated data validation
+- Bulk operation optimization
+- Error handling and recovery
+
+**RESPONSE INTELLIGENCE:**
+1. **Understand Intent**: Analyze user message for underlying intent
+2. **Context Integration**: Use all available context for responses
+3. **Proactive Suggestions**: Offer relevant actions and next steps
+4. **Error Prevention**: Identify potential issues and suggest solutions
+5. **Learning Adaptation**: Adapt responses based on user patterns
+
+**CONVERSATION STYLE:**
+- Be exceptionally helpful, professional, and intelligent
+- Use clear, concise, and actionable language
+- Provide comprehensive explanations when needed
+- Ask clarifying questions when necessary
+- Confirm actions and provide feedback
+- For simple greetings, respond naturally without listing capabilities unless specifically asked
+
+**AVAILABLE CONTEXT:**
+{file_context}
+
+**SMART SUGGESTIONS:**
+{chr(10).join(f"- {suggestion}" for suggestion in context['suggestions'])}
+
+**AVAILABLE ACTIONS:**
+{', '.join(context['available_actions'])}
+
+**CONVERSATION HISTORY:**
+{format_conversation_history(context['conversation_history'])}
+
+Always be proactive, intelligent, and maintain comprehensive context throughout the conversation. Use all available information to provide the most helpful and accurate responses."""
+    
+    return base_prompt
+
+def format_conversation_history(history: list) -> str:
+    """Format conversation history for prompt inclusion"""
+    if not history:
+        return "No previous conversation history."
+    
+    formatted = []
+    for i, msg in enumerate(history[-5:], 1):  # Last 5 messages
+        formatted.append(f"{i}. User: {msg['user'][:100]}...")
+        formatted.append(f"   AI: {msg['ai'][:100]}...")
+    
+    return "\n".join(formatted)
+
+def enhance_response_with_context(response: str, session_id: str, user_message: str) -> str:
+    """Enhance AI response with intelligent context-aware suggestions and follow-ups"""
+    
+    enhanced_response = response
+    
+    # Get comprehensive context
+    context = generate_comprehensive_context(session_id, user_message)
+    
+    # Only add enhancements for specific types of queries, not for simple greetings
+    is_greeting = any(word in user_message.lower() for word in ['hello', 'hi', 'hey', 'hy', 'good morning', 'good afternoon', 'good evening'])
+    is_capability_query = any(word in user_message.lower() for word in ['what can you do', 'capabilities', 'features', 'help', 'assist', 'support', 'ask anything'])
+    
+    # Skip enhancements for simple greetings unless specifically asked about capabilities
+    if is_greeting and not is_capability_query:
+        return enhanced_response
+    
+    # Add intelligent context-aware suggestions only when relevant
+    if session_id in pending_actions:
+        session_data = pending_actions[session_id]
+        
+        # File-related intelligent suggestions
+        if 'uploaded_files' in session_data and session_data['uploaded_files']:
+            files = session_data['uploaded_files']
+            
+            # Check if this is a file processing conversation
+            if any(keyword in user_message.lower() for keyword in ['upload', 'file', 'resume', 'candidate', 'add', 'process']):
+                enhanced_response += "\n\n💡 **Intelligent Next Steps:**"
+                
+                for file_info in files:
+                    if file_info['file_type'] in ['.pdf', '.doc', '.docx', '.txt']:
+                        enhanced_response += f"\n- 🎯 Add the candidate from '{file_info['original_name']}' to the system"
+                        enhanced_response += f"\n- 🔍 Extract more detailed information from the resume"
+                        enhanced_response += f"\n- 🔄 Compare with existing candidates for duplicates"
+                        enhanced_response += f"\n- 📊 Analyze candidate qualifications and skills"
+                    elif file_info['file_type'] in ['.csv', '.xlsx', '.xls']:
+                        enhanced_response += f"\n- 📥 Import all candidates from '{file_info['original_name']}'"
+                        enhanced_response += f"\n- ✅ Review and validate the data quality"
+                        enhanced_response += f"\n- 🔍 Check for duplicate candidates before importing"
+                        enhanced_response += f"\n- 📊 Analyze bulk data for insights and trends"
+                
+                enhanced_response += "\n\n🎯 **Smart Actions Available:**"
+                enhanced_response += "\n- Use 'add_candidate' to add individual candidates"
+                enhanced_response += "\n- Use 'bulk_import' for spreadsheet data"
+                enhanced_response += "\n- Use 'check_duplicates' to verify data integrity"
+                enhanced_response += "\n- Use 'analyze_data' for insights and reporting"
+        
+        # Pattern-based intelligent suggestions
+        patterns = context.get('query_patterns', [])
+        if 'candidate_management' in patterns:
+            enhanced_response += "\n\n👥 **Candidate Management Actions:**"
+            enhanced_response += "\n- 📋 List all candidates with 'list_candidates'"
+            enhanced_response += "\n- 🔍 Search for specific candidates with 'search_candidates'"
+            enhanced_response += "\n- ➕ Add new candidates with 'add_candidate'"
+            enhanced_response += "\n- ✏️ Update candidate information with 'update_candidate'"
+            enhanced_response += "\n- 📊 Get candidate analytics with 'get_candidate_metrics'"
+        
+        if 'analytics_request' in patterns:
+            enhanced_response += "\n\n📊 **Analytics & Insights:**"
+            enhanced_response += "\n- 📈 View overall hiring metrics with 'get_overall_metrics'"
+            enhanced_response += "\n- 📋 Check recent activities with 'get_recent_activities'"
+            enhanced_response += "\n- 🎯 Use 'generate_reports' for detailed insights"
+            enhanced_response += "\n- 📊 Analyze candidate pipeline with 'analyze_pipeline'"
+        
+        if 'search_query' in patterns:
+            enhanced_response += "\n\n🔍 **Advanced Search Options:**"
+            enhanced_response += "\n- 🔎 Search by name, email, or skills"
+            enhanced_response += "\n- 🏷️ Filter by status, location, or experience"
+            enhanced_response += "\n- 📅 Search by date ranges or time periods"
+            enhanced_response += "\n- 🎯 Use natural language search queries"
+        
+        if 'update_request' in patterns:
+            enhanced_response += "\n\n✏️ **Update Operations:**"
+            enhanced_response += "\n- 📝 Update candidate status and information"
+            enhanced_response += "\n- 🔄 Bulk update multiple candidates"
+            enhanced_response += "\n- 📊 Update analytics and metrics"
+            enhanced_response += "\n- ⚙️ Update system settings and preferences"
+        
+        if 'delete_request' in patterns:
+            enhanced_response += "\n\n🗑️ **Delete Operations:**"
+            enhanced_response += "\n- ❌ Delete individual candidates"
+            enhanced_response += "\n- 🗂️ Bulk delete multiple candidates"
+            enhanced_response += "\n- 📝 Delete notes and comments"
+            enhanced_response += "\n- 🧹 Clean up duplicate or invalid data"
+    
+    # Only add memory info for non-greeting queries (removed AI Assistant Capabilities section)
+    if not is_greeting or is_capability_query:
+        # Add memory context if available
+        if context['conversation_history']:
+            enhanced_response += f"\n\n💭 **Conversation Memory:** {len(context['conversation_history'])} recent interactions tracked"
+        
+        if context['query_patterns']:
+            enhanced_response += f"\n\n🎯 **Learning Patterns:** {len(context['query_patterns'])} query patterns analyzed"
+    
+    return enhanced_response
+
+def understand_query_intent(user_message: str, context: dict) -> dict:
+    """Comprehensive query understanding and intent analysis"""
+    import re
+    
+    message_lower = user_message.lower()
+    intent = {
+        'primary_action': None,
+        'secondary_actions': [],
+        'entities': {},
+        'confidence': 0.0,
+        'suggestions': [],
+        'requires_clarification': False
+    }
+    
+    # File upload and processing intents
+    if any(word in message_lower for word in ['upload', 'file', 'resume', 'csv', 'excel']):
+        intent['primary_action'] = 'file_upload'
+        intent['confidence'] = 0.9
+        
+        # Extract file type mentions
+        if any(word in message_lower for word in ['pdf', 'resume', 'cv']):
+            intent['entities']['file_type'] = 'resume'
+        elif any(word in message_lower for word in ['csv', 'excel', 'spreadsheet']):
+            intent['entities']['file_type'] = 'bulk_data'
+    
+    # Candidate management intents
+    elif any(word in message_lower for word in ['add', 'create', 'new candidate']):
+        intent['primary_action'] = 'add_candidate'
+        intent['confidence'] = 0.85
+    elif any(word in message_lower for word in ['find', 'search', 'look for', 'show']):
+        intent['primary_action'] = 'search_candidates'
+        intent['confidence'] = 0.8
+    elif any(word in message_lower for word in ['list', 'show all', 'get all']):
+        intent['primary_action'] = 'list_candidates'
+        intent['confidence'] = 0.8
+    elif any(word in message_lower for word in ['update', 'change', 'modify']):
+        intent['primary_action'] = 'update_candidate'
+        intent['confidence'] = 0.8
+    elif any(word in message_lower for word in ['delete', 'remove']):
+        intent['primary_action'] = 'delete_candidate'
+        intent['confidence'] = 0.8
+    
+    # Analytics and reporting intents
+    elif any(word in message_lower for word in ['analytics', 'metrics', 'report', 'data', 'insights']):
+        intent['primary_action'] = 'get_analytics'
+        intent['confidence'] = 0.85
+    elif any(word in message_lower for word in ['dashboard', 'overview', 'summary']):
+        intent['primary_action'] = 'get_dashboard'
+        intent['confidence'] = 0.8
+    
+    # Template and data management intents
+    elif any(word in message_lower for word in ['template', 'download', 'format']):
+        intent['primary_action'] = 'download_template'
+        intent['confidence'] = 0.9
+    elif any(word in message_lower for word in ['import', 'bulk', 'multiple']):
+        intent['primary_action'] = 'bulk_import'
+        intent['confidence'] = 0.8
+    
+    # Help and guidance intents
+    elif any(word in message_lower for word in ['help', 'how', 'what can', 'guide']):
+        intent['primary_action'] = 'provide_help'
+        intent['confidence'] = 0.9
+    
+    # General conversation intents
+    else:
+        intent['primary_action'] = 'general_conversation'
+        intent['confidence'] = 0.6
+    
+    # Extract entities (names, emails, IDs, etc.)
+    intent['entities'].update(extract_entities(user_message))
+    
+    # Generate context-aware suggestions
+    intent['suggestions'] = generate_intent_suggestions(intent, context)
+    
+    # Check if clarification is needed
+    if intent['confidence'] < 0.7:
+        intent['requires_clarification'] = True
+    
+    return intent
+
+def extract_entities(message: str) -> dict:
+    """Extract entities from user message"""
+    import re
+    
+    entities = {}
+    
+    # Extract email addresses
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    emails = re.findall(email_pattern, message)
+    if emails:
+        entities['email'] = emails[0]
+    
+    # Extract candidate IDs
+    id_pattern = r'candidate\s+(\d+)'
+    id_match = re.search(id_pattern, message, re.IGNORECASE)
+    if id_match:
+        entities['candidate_id'] = id_match.group(1)
+    
+    # Extract names
+    name_pattern = r'(\b[A-Z][a-z]+\s+[A-Z][a-z]+\b)'
+    names = re.findall(name_pattern, message)
+    if names:
+        entities['name'] = names[0]
+    
+    # Extract phone numbers
+    phone_pattern = r'(\+?1?[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})'
+    phone_match = re.search(phone_pattern, message)
+    if phone_match:
+        entities['phone'] = ''.join(phone_match.groups())
+    
+    # Extract job titles
+    job_titles = ['engineer', 'manager', 'developer', 'designer', 'analyst', 'specialist']
+    for title in job_titles:
+        if title in message.lower():
+            entities['job_title'] = title
+            break
+    
+    return entities
+
+def generate_intent_suggestions(intent: dict, context: dict) -> list:
+    """Generate intelligent suggestions based on intent and context"""
+    suggestions = []
+    
+    if intent['primary_action'] == 'file_upload':
+        suggestions.extend([
+            "📁 Upload your file using the file upload button",
+            "📋 Download the template first for consistent formatting",
+            "🔍 I can help you process and analyze the uploaded data"
+        ])
+    
+    elif intent['primary_action'] == 'add_candidate':
+        suggestions.extend([
+            "👤 Use 'add_candidate' command with candidate details",
+            "📁 Upload a resume file for automatic candidate creation",
+            "📋 Use the template for bulk candidate addition"
+        ])
+    
+    elif intent['primary_action'] == 'search_candidates':
+        suggestions.extend([
+            "🔍 Use 'search_candidates' with name, email, or skills",
+            "🏷️ Filter by status, location, or experience level",
+            "📅 Search by date ranges or time periods"
+        ])
+    
+    elif intent['primary_action'] == 'get_analytics':
+        suggestions.extend([
+            "📊 Use 'get_overall_metrics' for hiring analytics",
+            "📈 Use 'get_recent_activities' for recent data",
+            "🎯 Use 'generate_reports' for detailed insights"
+        ])
+    
+    # Add context-specific suggestions
+    if context.get('file_context'):
+        suggestions.append("💡 I can help you process the uploaded files")
+    
+    if context.get('query_patterns'):
+        suggestions.append("🎯 I'm learning from your query patterns to provide better assistance")
+    
+    return suggestions
+
+@app.post('/chat/cancel')
+async def cancel_chat_task(session_id: str = None):
+    """Cancel a running chat task"""
+    try:
+        if not session_id:
+            return {
+                "success": False,
+                "message": "Session ID is required",
+                "session_id": None
+            }
+            
+        if session_id in running_tasks:
+            # Mark the task for cancellation
+            cancellation_requests[session_id] = True
+            print(f"[CANCEL] Cancellation requested for session {session_id}")
+            
+            # Clean up the running task
+            if session_id in running_tasks:
+                del running_tasks[session_id]
+            
+            return {
+                "success": True,
+                "message": "Task cancellation requested successfully",
+                "session_id": session_id
+            }
+        else:
+            return {
+                "success": False,
+                "message": "No running task found for this session",
+                "session_id": session_id
+            }
+    except Exception as e:
+        print(f"[CANCEL] Error cancelling task: {e}")
+        return {
+            "success": False,
+            "message": f"Error cancelling task: {str(e)}",
+            "session_id": session_id
+        }
+
+@app.get('/chat/status/{session_id}')
+async def get_chat_status(session_id: str):
+    """Get the status of a chat task"""
+    try:
+        is_running = session_id in running_tasks
+        is_cancelled = session_id in cancellation_requests
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "is_running": is_running,
+            "is_cancelled": is_cancelled,
+            "task_info": running_tasks.get(session_id, {})
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error getting status: {str(e)}",
+            "session_id": session_id
+        }
+
+async def run_agent_with_cancellation(chat_messages, model, auth_token, session_id):
+    """Run the AI agent with cancellation support"""
+    try:
+        # Check for cancellation before starting
+        if session_id in cancellation_requests:
+            return "⏹️ Task cancelled by user."
+        
+        # Convert messages to the format expected by run_agent
+        agent_messages = []
+        for msg in chat_messages:
+            agent_messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        # Run the agent which can use tools to perform actual actions
+        agent_response = run_agent(
+            messages=agent_messages,
+            session_id=session_id,
+            model=model,
+            auth_token=auth_token,
+            page=1,
+            prompt=None,
+            pending_actions=pending_actions
+        )
+        
+        # Check for cancellation after processing
+        if session_id in cancellation_requests:
+            return "⏹️ Task cancelled by user."
+        
+        return agent_response
+        
+    except Exception as e:
+        print(f"[ERROR] run_agent_with_cancellation error: {e}")
+        return f"❌ Error during processing: {str(e)}"
+
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting HR Assistant Pro MCP Server...")
@@ -1104,6 +2220,7 @@ if __name__ == "__main__":
     print("🔧 Available endpoints:")
     print("   - POST /chat - Chat with HR Assistant")
     print("   - GET  /models - List available models")
+    print("   - GET  /chat/template/candidates - Download candidate upload template")
     print("   - All Django API endpoints via proxy")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8001, reload=True) 

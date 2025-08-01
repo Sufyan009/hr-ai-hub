@@ -1,0 +1,2 @@
+first_name,last_name,email,phone_number,job_title,candidate_stage,communication_skills,years_of_experience,expected_salary,current_salary,city,source,notes
+John,Doe,john.doe@example.com,555-0101,Software Engineer,Screening,Excellent,5,80000,75000,New York,LinkedIn,Experienced developer

@@ -1,0 +1,6 @@
+first_name,last_name,email,phone_number,job_title,candidate_stage,years_of_experience,current_salary,expected_salary,skills,city,source,communication_skills,notes
+Aisha,Khan,aisha.khan@email.com,+92-300-1234567,Software Engineer,screening,3,75000,85000,"Python, JavaScript, React",Karachi,LinkedIn,Excellent,Strong technical background with excellent communication skills
+Zainab,Ali,zainab.ali@email.com,+92-301-2345678,Data Analyst,hired,2,65000,75000,"SQL, Python, Tableau",Lahore,Indeed,Good,Analytical thinker with great attention to detail
+Fatima,Hassan,fatima.hassan@email.com,+92-302-3456789,Product Manager,interview,4,90000,100000,"Product Strategy, Agile, User Research",Islamabad,Referral,Excellent,Experienced in product development and team leadership
+Amira,Rehman,amira.rehman@email.com,+92-303-4567890,UX Designer,rejected,1,55000,65000,"Figma, Adobe Creative Suite, User Testing",Rawalpindi,Company Website,Average,Creative designer with strong portfolio
+Sana,Malik,sana.malik@email.com,+92-304-5678901,DevOps Engineer,screening,5,95000,110000,"Docker, Kubernetes, AWS",Faisalabad,LinkedIn,Good,Infrastructure expert with cloud migration experience 

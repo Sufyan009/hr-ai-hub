@@ -23,6 +23,8 @@ const LoginForm: React.FC<{ onLogin: (username: string, password: string) => Pro
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLocalErrors({});
+    
+    // Add null checks to prevent external script conflicts
     if (!username || !password) {
       setLocalErrors({
         username: !username ? 'Username is required.' : '',
@@ -30,7 +32,22 @@ const LoginForm: React.FC<{ onLogin: (username: string, password: string) => Pro
       });
       return;
     }
-    await onLogin(username, password);
+    
+    // Validate form data before submission
+    const formData = {
+      username: username?.trim() || '',
+      password: password || ''
+    };
+    
+    if (!formData.username || !formData.password) {
+      setLocalErrors({
+        username: !formData.username ? 'Username is required.' : '',
+        password: !formData.password ? 'Password is required.' : '',
+      });
+      return;
+    }
+    
+    await onLogin(formData.username, formData.password);
   };
 
   return (
@@ -41,6 +58,7 @@ const LoginForm: React.FC<{ onLogin: (username: string, password: string) => Pro
           <User className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             id="username"
+            name="username"
             placeholder="Enter your username"
             className="pl-10"
             value={username}
@@ -49,6 +67,8 @@ const LoginForm: React.FC<{ onLogin: (username: string, password: string) => Pro
             aria-required="true"
             autoFocus
             aria-invalid={!!localErrors.username}
+            autoComplete="username"
+            data-form-type="username"
           />
         </div>
         {localErrors.username && <p className="text-xs text-red-500">{localErrors.username}</p>}
@@ -59,6 +79,7 @@ const LoginForm: React.FC<{ onLogin: (username: string, password: string) => Pro
           <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             id="password"
+            name="password"
             type={showPassword ? 'text' : 'password'}
             placeholder="Enter your password"
             className="pl-10 pr-10"
@@ -67,6 +88,8 @@ const LoginForm: React.FC<{ onLogin: (username: string, password: string) => Pro
             required
             aria-required="true"
             aria-invalid={!!localErrors.password}
+            autoComplete="current-password"
+            data-form-type="password"
           />
           <button
             type="button"
